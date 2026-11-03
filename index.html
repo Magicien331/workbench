@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.googleusercontent.com; font-src 'self'; connect-src 'self' https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src https://*.firebaseapp.com https://*.web.app https://accounts.google.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0C66E4">
+<title>Workbench</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Workbench">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="styles.css">
+<script src="boot.js"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div id="gate" class="gate"></div>
+
+<div id="app" hidden>
+  <div id="demoBar" class="demo-bar" hidden data-t="demo.bar"></div>
+  <header class="nav">
+    <button class="btn icon subtle" data-act="toggle-side" data-tt="nav.menu" data-i="menu"></button>
+    <img class="brand-logo brand-ink" src="assets/mccann-valley.png" alt="McCann Valley" width="304" height="117">
+    <span class="nav-div" aria-hidden="true"></span>
+    <button class="ws-btn" id="wsBtn" data-act="ws-menu" aria-haspopup="menu"><span class="ws-name">Workbench</span></button>
+    <span class="loz ro-loz" id="roChip" hidden></span>
+    <span class="sp"></span>
+    <button class="btn primary nav-create" id="createBtn" data-act="create" data-tt="nav.createTitle" data-i="plus"><span class="lbl-t" data-t="nav.create"></span></button>
+    <button class="btn icon subtle bell" id="bellBtn" data-act="bell" hidden data-i="bell"><span class="bell-n" id="bellN"></span></button>
+    <button class="btn icon subtle" data-act="theme" id="themeBtn"></button>
+    <button class="btn icon subtle kbd-btn" data-act="shortcuts" data-tt="nav.shortcuts" data-i="kbd"></button>
+    <button class="me-btn" id="meBtn" data-act="me-menu" data-tt="nav.account" aria-haspopup="menu"></button>
+  </header>
+
+  <div class="shell" id="shell">
+    <aside class="side" id="side">
+      <div class="side-in">
+        <div class="proj"><span class="proj-av" id="projAv"></span><div style="min-width:0"><b id="projName" data-bidi></b><small id="projSub"></small></div></div>
+        <div class="side-h row"><span data-t="side.boards"></span><button class="btn icon subtle sm" id="newBoardBtn" data-act="new-board" data-tt="side.newBoard" data-i="plus"></button></div>
+        <div id="boardList"></div>
+        <div class="side-h" data-t="side.views"></div>
+        <button class="side-item" data-act="view" data-view="board" data-i="board"><span data-t="side.board"></span></button>
+        <button class="side-item" data-act="view" data-view="list" data-i="list"><span data-t="side.list"></span></button>
+        <button class="side-item" data-act="view" data-view="archive" data-i="archive"><span data-t="side.archive"></span></button>
+        <div class="side-h" data-t="side.settings"></div>
+        <button class="side-item" id="sideSettings" data-act="board-settings" data-i="gear"><span data-t="side.boardSettings"></span></button>
+        <button class="side-item" id="sideTypes" data-act="types" data-i="shapes"><span data-t="side.types"></span></button>
+        <button class="side-item" id="sideWs" data-act="ws-settings" data-i="users"><span data-t="side.workspace"></span></button>
+        <div class="side-h" data-t="side.backup"></div>
+        <button class="side-item" data-act="export" data-i="down"><span data-t="side.export"></span></button>
+        <button class="side-item" id="sideImport" data-act="import" data-i="up"><span data-t="side.import"></span></button>
+        <p class="side-note" id="sideNote" data-t="side.note"></p>
+      </div>
+    </aside>
+    <div class="side-scrim" data-act="toggle-side"></div>
+
+    <main class="main">
+      <div class="page-head">
+        <div class="crumbs"><span id="crumbWs" data-bidi></span><span>/</span><span id="crumbBoard" data-bidi></span></div>
+        <div class="title-row"><h1 id="viewTitle"></h1><button class="btn icon subtle" id="gearBtn" data-act="board-settings" data-tt="side.boardSettings" data-i="gear"></button><span id="summary"></span></div>
+        <div class="toolbar">
+          <label class="search"><span data-i="search"></span><input id="q" type="search" data-tp="search.ph" autocomplete="off"></label>
+          <div class="qfs" role="group">
+            <button class="qf" data-act="qf" data-qf="overdue" aria-pressed="false" data-t="qf.overdue"></button>
+            <button class="qf" data-act="qf" data-qf="week" aria-pressed="false" data-t="qf.week"></button>
+            <button class="qf" data-act="qf" data-qf="high" aria-pressed="false" data-t="qf.high"></button>
+            <button class="qf" id="typeF" data-act="type-filter-menu" aria-haspopup="menu" aria-pressed="false"></button>
+            <button class="qf" id="platF" data-act="plat-filter-menu" aria-haspopup="menu" aria-pressed="false"></button>
+          </div>
+          <button class="btn subtle" id="clearF" data-act="clear-filters" hidden data-t="qf.clear"></button>
+        </div>
+      </div>
+      <div id="board" class="board"></div>
+      <div id="listview" class="listview" hidden></div>
+    </main>
+  </div>
+</div>
+
+<div id="layer"></div>
+<div id="pop" class="pop" role="menu" hidden></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+<input type="file" id="logoFile" accept="image/*" hidden>
+</body>
+</html>

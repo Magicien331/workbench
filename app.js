@@ -1,0 +1,2126 @@
+import { createStore, isConfigured } from './store.js';
+import { t, tn, getLang, setLang, locale } from './i18n.js';
+
+/* ================= Constants ================= */
+const ALL = '*';
+const CATS = ['todo','doing','wait','done'];
+const PRIOS = ['highest','high','medium','low','lowest'];
+const PRANK = Object.fromEntries(PRIOS.map((k,i)=>[k,i]));
+const catName = c=>t('cat.'+c);
+const prioName = p=>t('prio.'+p);
+const PALETTE = [['sky','#4BADE8'],['blue','#1D7AFC'],['teal','#2898BD'],['green','#22A06B'],['lime','#63BA3C'],['yellow','#E2B203'],['orange','#F38A3F'],['red','#E5493A'],['magenta','#DA62AC'],['purple','#8F7EE7'],['grey','#8590A2']];
+const PLATFORMS = [['Google Ads','#1D7AFC'],['Meta','#8F7EE7'],['Microsoft Ads','#2898BD'],['TikTok','#DA62AC'],['Taboola / Outbrain','#F38A3F'],['other','#8590A2']];
+const EXTRA = [['sky','#4BADE8'],['green','#22A06B'],['lime','#63BA3C'],['yellow','#E2B203'],['red','#E5493A']];
+const platLabel = n=>n === 'other' ? t('plat.other') : n;
+function colorName(h){
+  const p = PLATFORMS.find(x=>x[1]===h); if (p) return platLabel(p[0]);
+  const c = PALETTE.find(x=>x[1]===h); return c ? t('color.'+c[0]) : h;
+}
+const GLYPHS = {
+  check:'<path d="M4.6 8.3l2.2 2.2 4.6-4.8" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  bookmark:'<path d="M5.5 4h5a.5.5 0 0 1 .5.5V12l-3-2.2L5 12V4.5a.5.5 0 0 1 .5-.5z" fill="#fff"/>',
+  dot:'<circle cx="8" cy="8" r="3" fill="#fff"/>',
+  ring:'<circle cx="8" cy="8" r="3.1" fill="none" stroke="#fff" stroke-width="1.8"/>',
+  bolt:'<path d="M9 2.8L4.8 9h3l-.8 4.2L11.2 7h-3z" fill="#fff"/>',
+  star:'<path d="M8 3.2l1.4 2.9 3.2.4-2.3 2.2.6 3.1L8 10.3l-2.9 1.5.6-3.1-2.3-2.2 3.2-.4z" fill="#fff"/>',
+  flag:'<path d="M5.2 3.6v9" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/><path d="M5.8 4h5.4l-1.4 2.2 1.4 2.3H5.8z" fill="#fff"/>',
+  doc:'<path d="M5 3.5h4l2 2v7H5z" fill="#fff"/><path d="M6.6 8h2.8M6.6 10h2.8" stroke-width="1" stroke="currentColor"/>',
+  eye:'<path d="M2.8 8S4.6 4.8 8 4.8 13.2 8 13.2 8 11.4 11.2 8 11.2 2.8 8 2.8 8z" fill="none" stroke="#fff" stroke-width="1.5"/><circle cx="8" cy="8" r="1.4" fill="#fff"/>',
+  question:'<path d="M6.2 6.3a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.8.6-.8 1.1v.4" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.7" r="1" fill="#fff"/>',
+  up:'<path d="M8 12V4.4M4.9 7.4 8 4.3l3.1 3.1" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+  heart:'<path d="M8 12.2S3.6 9.6 3.6 6.6A2.2 2.2 0 0 1 8 5.8a2.2 2.2 0 0 1 4.4.8c0 3-4.4 5.6-4.4 5.6z" fill="#fff"/>'
+};
+/* Starting setups. Text follows the language chosen when the workspace is created. */
+const COLS_PPC = ()=>[['todo','todo'],['doing','doing'],['approval','wait'],['live','doing'],['done','done']].map(([k,cat])=>({id:uid(), name:t('tpl.col.'+k), cat}));
+const COLS_BASIC = ()=>[['todo','todo'],['doing','doing'],['done','done']].map(([k,cat])=>({id:uid(), name:t('tpl.col.'+k), cat}));
+const TYPES_PPC = ()=>[['brief','#8F7EE7','flag'],['analysis','#2898BD','eye'],['mediaplan','#D97008','ring'],['launch','#22A06B','bolt'],['creative','#E774BB','heart'],['optim','#1D7AFC','up'],['report','#626F86','doc'],['tracking','#E5493A','dot']].map(([id,color,glyph])=>({id, name:t('tpl.type.'+id), color, glyph}));
+const TYPES_BASIC = ()=>[['task','#4BADE8','check'],['story','#63BA3C','bookmark'],['bug','#E5493A','dot']].map(([id,color,glyph])=>({id, name:t('tpl.type.'+id), color, glyph}));
+const PPC_CLIENTS = [['קניון עופר','OFR','#2898BD','kanyon-ofer'],['אלדן','ELD','#22A06B','eldan'],['בית בלב','BTB','#F38A3F','beit-balev'],['ליימן שליסל','LSH','#8F7EE7','leiman-schlissel']];
+
+/* ================= Helpers ================= */
+const $ = (s,r=document)=>r.querySelector(s), $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const isMobile = ()=>matchMedia('(max-width:760px)').matches;
+const sideOverlay = ()=>matchMedia('(max-width:1024px)').matches;
+const coarse = ()=>matchMedia('(pointer:coarse)').matches;
+const rtl = ()=>document.documentElement.dir === 'rtl';
+function uid(){ return Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4); }
+const clone = o=>JSON.parse(JSON.stringify(o));
+function stable(v){
+  if (Array.isArray(v)) return '['+v.map(stable).join(',')+']';
+  if (v && typeof v === 'object') return '{'+Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>JSON.stringify(k)+':'+stable(v[k])).join(',')+'}';
+  return JSON.stringify(v === undefined ? null : v);
+}
+const pad = n=>String(n).padStart(2,'0');
+const iso = d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const today = ()=>iso(new Date());
+const addDays = n=>{const d=new Date(); d.setDate(d.getDate()+n); return iso(d);};
+const isISO = s=>typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+const daysBetween = (a,b)=>Math.round((new Date(b+'T12:00') - new Date(a+'T12:00'))/864e5);
+const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const lower = s=>String(s||'').trim().toLowerCase();
+const isEmail = s=>/^[a-z0-9._%+-]+@[a-z0-9.-]+[.][a-z]{2,}$/.test(String(s).trim().toLowerCase()); // same pattern as firestore.rules
+function fmtDay(d){
+  const dt = new Date(d+'T00:00'), o = {day:'numeric',month:'short'};
+  if (dt.getFullYear() !== new Date().getFullYear()) o.year = 'numeric';
+  return dt.toLocaleDateString(locale(),o);
+}
+const fmtTime = ts=>new Date(ts).toLocaleString(locale(),{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+function ago(ts){
+  const s = (Date.now()-ts)/1000;
+  if (s < 45) return t('ago.now');
+  const m = Math.round(s/60); if (m < 60) return tn('ago.min', m);
+  const h = Math.round(m/60); if (h < 24) return tn('ago.hour', h);
+  const d = Math.round(h/24); if (d < 7) return d===1 ? t('ago.yesterday') : tn('ago.day', d);
+  return fmtTime(ts);
+}
+function hl(s){
+  const q = query.trim(); if (!q) return esc(s);
+  const ls = s.toLowerCase(), lq = q.toLowerCase(); let out = '', i = 0, j;
+  while ((j = ls.indexOf(lq,i)) > -1){ out += esc(s.slice(i,j))+'<mark>'+esc(s.slice(j,j+q.length))+'</mark>'; i = j+q.length; }
+  return out+esc(s.slice(i));
+}
+const linkify = s=>s.replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank" rel="noopener" dir="ltr">$1</a>');
+const normLabel = s=>String(s).replace(/,/g,' ').replace(/\s+/g,' ').trim().slice(0,40);
+const sameText = (a,b)=>normLabel(a).toLowerCase() === normLabel(b).toLowerCase();
+function autosize(el){ if(!el) return; el.style.height='auto'; el.style.height=(el.scrollHeight+(el.offsetHeight-el.clientHeight))+'px'; }
+const isHex = c=>typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
+const isImg = s=>typeof s === 'string' && s.length < 200000 && /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(s);
+// Every id that ends up in HTML attributes must match this. Data from the database is checked on arrival.
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/, REQ_ID = /^[A-Za-z0-9_@.%+-]{1,200}$/;
+const sid = (v, fallback='')=>{ v = String(v ?? ''); return SAFE_ID.test(v) ? v : fallback; };
+const REQ_STATUS = ['pending','approved','declined'];
+function keyFromName(n){
+  const w = n.trim().toUpperCase().replace(/[^A-Z0-9\s]/g,'').split(/\s+/).filter(Boolean);
+  if (!w.length) return '';
+  return (w.length === 1 ? w[0].slice(0,3) : w.map(x=>x[0]).join('').slice(0,4)).replace(/^[0-9]+/,'');
+}
+function normUrl(v){
+  v = String(v||'').trim(); if (!v) return null;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(v)) v = 'https://' + v;
+  try { const u = new URL(v); return /^https?:$/.test(u.protocol) && u.hostname.includes('.') ? u.href : null; } catch(e){ return null; }
+}
+function hostOf(u){ try { return new URL(u).hostname.replace(/^www\./,''); } catch(e){ return u; } }
+const initialOf = n=>esc((String(n).trim()[0]||'?').toUpperCase());
+function hue(s){ let h = 0; for (const c of String(s)) h = (h*31 + c.charCodeAt(0)) % 360; return h; }
+function avatar(p, cls=''){
+  p = p || {};
+  if (p.photo && user && p.photo === user.photo && /^https:\/\/[a-z0-9.-]+\.googleusercontent\.com\//i.test(p.photo)) return `<img class="avatar ${cls}" src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer" title="${esc(p.name||p.email||'')}">`;
+  const n = p.name || p.email || '?', parts = String(n).trim().split(/\s+/);
+  const ini = esc(((parts[0]||'?')[0] + (parts[1]?.[0]||'')).toUpperCase());
+  return `<span class="avatar ${cls}" style="background:hsl(${hue(p.email||n)} 45% 45%)" title="${esc(p.name||p.email||'')}">${ini}</span>`;
+}
+
+/* ================= Icons ================= */
+const ic = d=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+const I = {
+  search:ic('<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>'),
+  plus:ic('<path d="M12 5v14M5 12h14"/>'),
+  x:ic('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>'),
+  more:ic('<circle cx="5.5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.7" fill="currentColor" stroke="none"/>'),
+  check:ic('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+  cal:ic('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'),
+  sub:ic('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/><path d="M7.5 11v4.5A1.5 1.5 0 0 0 9 17h4"/>'),
+  comment:ic('<path d="M5 5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>'),
+  menu:ic('<path d="M4 7h16M4 12h16M4 17h16"/>'),
+  board:ic('<rect x="4" y="4" width="4.5" height="16" rx="1"/><rect x="9.75" y="4" width="4.5" height="11" rx="1"/><rect x="15.5" y="4" width="4.5" height="7" rx="1"/>'),
+  list:ic('<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>'),
+  down:ic('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
+  up:ic('<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>'),
+  trash:ic('<path d="M5 7h14M10 11v6M14 11v6M6.5 7l.8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12M9.5 7V4.5h5V7"/>'),
+  sun:ic('<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2.5 12h2M19.5 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  moon:ic('<path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10z"/>'),
+  kbd:ic('<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M7.5 14h9"/>'),
+  chev:ic('<path d="M7 10l5 5 5-5"/>'),
+  copy:ic('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>'),
+  open:ic('<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
+  clock:ic('<circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2"/>'),
+  arrow:ic('<path d="M12 19V5M6 11l6-6 6 6"/>'),
+  aup:ic('<path d="M7 14l5-5 5 5"/>'),
+  adown:ic('<path d="M7 10l5 5 5-5"/>'),
+  gear:ic('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  shapes:ic('<rect x="4" y="4" width="7" height="7" rx="1.5"/><circle cx="16.5" cy="7.5" r="3.5"/><path d="M7.5 13.5l4 6.5h-8z"/><rect x="13" y="13" width="7" height="7" rx="3.5"/>'),
+  archive:ic('<rect x="3.5" y="4" width="17" height="4.5" rx="1"/><path d="M5 8.5V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8.5M10 12.5h4"/>'),
+  restore:ic('<path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4.5h4.5"/>'),
+  link:ic('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
+  grid:ic('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>'),
+  users:ic('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/>'),
+  bell:ic('<path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/>'),
+  mail:ic('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 6.5l8.5 6.5 8.5-6.5"/>'),
+  globe:ic('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 3.7 5.4 3.7 8.5s-1.2 5.9-3.7 8.5c-2.5-2.6-3.7-5.4-3.7-8.5s1.2-5.9 3.7-8.5z"/>'),
+  logout:ic('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/>'),
+  image:ic('<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 16l-5-5-8.5 8.5"/>'),
+  eye:ic('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>'),
+  key:ic('<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/>'),
+  tick:'<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6.5"/></svg>'
+};
+const APP_MARK = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="3" height="11" rx="1" fill="#fff"/><rect x="6.5" y="2.5" width="3" height="7.5" rx="1" fill="#fff" opacity=".85"/><rect x="11" y="2.5" width="3" height="4.5" rx="1" fill="#fff" opacity=".7"/></svg>';
+const swTick = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6.5"/></svg>';
+function typeSVG(ty){
+  const name = esc(ty?.name || ''), color = ty?.color || '#4BADE8', g = GLYPHS[ty?.glyph] || GLYPHS.check;
+  return `<svg class="t-ico" viewBox="0 0 16 16" role="img" aria-label="${name}" style="color:${color}"><title>${name}</title><rect width="16" height="16" rx="3" fill="${color}"/>${g}</svg>`;
+}
+const typeIcon = id=>typeSVG(typeOf(id));
+function prioIcon(p){
+  const up='#E2483D', mid='#E2B203', dn='#1D7AFC';
+  const paths = {highest:[up,'M4 8l4-3 4 3M4 12l4-3 4 3'], high:[up,'M4 10l4-3.5 4 3.5'], medium:[mid,'M3.5 6.5h9M3.5 9.5h9'],
+    low:[dn,'M4 6l4 3.5 4-3.5'], lowest:[dn,'M4 4l4 3 4-3M4 8l4 3 4-3']}[p] || [mid,'M3.5 6.5h9M3.5 9.5h9'];
+  const n = esc(t('prio.label', {p:prioName(p||'medium')}));
+  return `<svg class="p-ico" viewBox="0 0 16 16" role="img" aria-label="${n}"><title>${n}</title><path d="${paths[1]}" fill="none" stroke="${paths[0]}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+const lozC = c=>`<span class="loz ${c.cat}" data-bidi>${esc(c.name)}</span>`;
+function bAv(b, cls=''){
+  if (!b) return '';
+  if (isImg(b.logo)) return `<span class="b-av logo ${cls}" title="${esc(b.name)}"><img src="${esc(b.logo)}" alt=""></span>`;
+  return `<span class="b-av ${cls}" style="--bc:${b.color}" title="${esc(b.name)}">${initialOf(b.name)}</span>`;
+}
+function swatches(act, sel, opts={}){
+  const list = opts.list || PALETTE;
+  return `<div class="sw-row" role="group" aria-label="${esc(opts.label||t('f.color'))}">${opts.none ? `<button type="button" class="sw none${!sel?' on':''}${opts.sm?' sm':''}" data-act="${act}" data-c="" aria-label="${esc(t('color.none'))}" aria-pressed="${!sel}" title="${esc(t('color.none'))}"></button>` : ''}${
+    list.map(([n,h])=>`<button type="button" class="sw${sel===h?' on':''}${opts.sm?' sm':''}" style="--sw:${h}" data-act="${act}" data-c="${h}" aria-label="${esc(t('color.'+n))}" aria-pressed="${sel===h}" title="${esc(t('color.'+n))}">${swTick}</button>`).join('')}</div>`;
+}
+function platformPicker(act, sel){
+  return `<div class="plat-wrap"><div class="plat" role="group" aria-label="${esc(t('f.platform'))}">
+      <button type="button" class="plat-b none${!sel?' on':''}" data-act="${act}" data-c="" aria-pressed="${!sel}">${esc(t('plat.none'))}</button>
+      ${PLATFORMS.map(([n,h])=>`<button type="button" class="plat-b${sel===h?' on':''}" style="--sw:${h}" data-act="${act}" data-c="${h}" aria-pressed="${sel===h}"><i></i><span data-bidi>${esc(platLabel(n))}</span></button>`).join('')}
+    </div><div class="plat-more"><span>${esc(t('plat.more'))}</span>${swatches(act, sel, {list:EXTRA, sm:true, label:t('plat.more')})}</div></div>`;
+}
+function markPicked(btn){
+  const wrap = btn.closest('.plat-wrap') || btn.parentElement;
+  $$('[data-c]', wrap).forEach(s=>{ const on = s.dataset.c === btn.dataset.c; s.classList.toggle('on', on); s.setAttribute('aria-pressed', on); });
+}
+
+/* ================= Preferences (this device) ================= */
+const PREF_KEY = 'workbench.prefs';
+const P = (()=>{ try { return {view:'board', theme:null, side:true, active:{}, ...JSON.parse(localStorage.getItem(PREF_KEY)||'{}')}; } catch(e){ return {view:'board', theme:null, side:true, active:{}}; } })();
+const savePrefs = ()=>{ try { localStorage.setItem(PREF_KEY, JSON.stringify(P)); } catch(e){} };
+
+/* ================= Session state ================= */
+let store = null, user = null, wsList = null, wsId = null, ws = null;
+let incoming = [], outgoing = [], mayCreate = true;
+let unsubWs = null, unsubData = null, unsubIn = null, unsubOut = null;
+let S = {boards:[], issues:[], types:[]};
+let loaded = {boards:false, issues:false, meta:false};
+const synced = {boards:new Map(), issues:new Map(), meta:null};
+let screen = 'loading'; // loading | signin | welcome | app
+let awaitOpen = null;
+
+const role = ()=>!ws ? null : ws.ownerUid === user?.uid ? 'owner' : (ws.roles||{})[user?.email] || 'viewer';
+const canEdit = ()=>role() === 'owner' || role() === 'editor';
+const isOwner = ()=>role() === 'owner';
+const me = ()=>({uid:user.uid, name:user.name, email:user.email});
+
+const get = id=>S.issues.find(i=>i.id===id);
+const activeKey = ()=>P.active[wsId];
+const isAll = ()=>activeKey() === ALL;
+const boardById = id=>S.boards.find(b=>b.id===id);
+const curBoard = ()=>boardById(activeKey()) || boardById(P.lastBoard?.[wsId]) || S.boards[0] || null;
+const boardOf = i=>boardById(i.boardId) || S.boards[0];
+const colOf = i=>{ const b = boardOf(i); return b.columns.find(c=>c.id===i.status) || b.columns[0]; };
+const colById = (b,id)=>b.columns.find(c=>c.id===id);
+const isDone = i=>colOf(i).cat === 'done';
+const typeOf = id=>S.types.find(x=>x.id===id) || S.types[0] || {id:'', name:'', color:'#4BADE8', glyph:'check'};
+const key = i=>`${boardOf(i).key}-${i.num}`;
+const boardIssues = (b=curBoard())=>b ? S.issues.filter(i=>i.boardId===b.id && !i.archived) : [];
+const scopeIssues = ()=>{ const b = curBoard(); return S.issues.filter(i=>!i.archived && (isAll() || (b && i.boardId===b.id))); };
+
+/* ---------- normalizing documents ---------- */
+function normBoard(id, d){
+  return {id, name:String(d.name||'Board'), key:String(d.key||'B').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,10)||'B',
+    color:isHex(d.color)?d.color:'#1D7AFC', logo:isImg(d.logo)?d.logo:null, seq:Number(d.seq)||0, order:Number.isFinite(d.order)?d.order:0,
+    columns:(Array.isArray(d.columns)&&d.columns.length?d.columns:COLS_BASIC()).map(c=>({id:sid(c?.id, 'c'+uid()), name:String(c.name||''), cat:CATS.includes(c.cat)?c.cat:'todo'}))};
+}
+const normBy = b=>b && typeof b === 'object' ? {uid:String(b.uid||''), name:String(b.name||''), email:String(b.email||'')} : null;
+function normIssue(id, d){
+  const now = Date.now();
+  const o = {id, boardId:sid(d.boardId), num:Number(d.num)||0, type:sid(d.type), title:String(d.title??''), status:sid(d.status),
+    priority:PRIOS.includes(d.priority)?d.priority:'medium', due:isISO(d.due)?d.due:'', start:isISO(d.start)?d.start:iso(new Date(Number(d.created)||now)),
+    doneAt:Number(d.doneAt)||null, points:(d.points===''||d.points==null||isNaN(Number(d.points)))?null:Number(d.points),
+    labels:Array.isArray(d.labels)?d.labels.map(l=>normLabel(l)).filter(Boolean):[], desc:String(d.desc??''), color:isHex(d.color)?d.color:null,
+    links:(Array.isArray(d.links)?d.links:[]).filter(l=>l&&normUrl(l.url)).map(l=>({id:sid(l.id, uid()), url:normUrl(l.url), title:String(l.title||'')})),
+    subtasks:Array.isArray(d.subtasks)?d.subtasks.filter(Boolean).map(s=>({id:sid(s.id, uid()), text:String(s.text||''), done:!!s.done})):[],
+    comments:Array.isArray(d.comments)?d.comments.filter(Boolean).map(c=>({id:sid(c.id, uid()), text:String(c.text||''), at:Number(c.at)||now, edited:!!c.edited, by:normBy(c.by)})):[],
+    history:Array.isArray(d.history)?d.history.filter(Boolean).slice(0,200).map(h=>({id:sid(h.id, uid()), at:Number(h.at)||now, text:String(h.text||''), by:h.by?String(h.by):''})):[],
+    archived:!!d.archived, archivedAt:d.archived?(Number(d.archivedAt)||now):null, created:Number(d.created)||now, updated:Number(d.updated)||now,
+    rank:Number.isFinite(d.rank)?d.rank:0};
+  return o;
+}
+const serBoard = b=>{ const {id, ...rest} = b; return rest; };
+const serIssue = i=>{ const {id, ...rest} = i; return rest; };
+const serMeta = ()=>({types:S.types.map(({id,name,color,glyph})=>({id,name,color,glyph}))});
+
+/* ---------- merging snapshots ---------- */
+// base = the last version of each doc we know the server has. Used for three-way merges,
+// so two people editing different parts of the same issue don't overwrite each other.
+const base = {boards:new Map(), issues:new Map()};
+const ID_ARRAYS = new Set(['comments','links','subtasks','history']);
+function replaceInPlace(target, src){ for (const k of Object.keys(target)) if (!(k in src)) delete target[k]; Object.assign(target, src); }
+function assignMissing(arr, field){
+  for (let k = 0; k < arr.length; k++){
+    if (Number.isFinite(arr[k][field])) continue;
+    let prev = null, next = null;
+    for (let m = k-1; m >= 0; m--) if (Number.isFinite(arr[m][field])){ prev = arr[m][field]; break; }
+    for (let m = k+1; m < arr.length; m++) if (Number.isFinite(arr[m][field])){ next = arr[m][field]; break; }
+    arr[k][field] = prev === null && next === null ? 0 : prev === null ? next - 1000 : next === null ? prev + 1000 : (prev + next) / 2;
+  }
+}
+const byRank = f=>(a,b)=>(a[f] - b[f]) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+function merge3(local, old, inc){
+  const out = {...local};
+  for (const k of new Set([...Object.keys(inc), ...Object.keys(local)])){
+    if (k === 'id') continue;
+    const lv = stable(local[k]), bv = stable(old?.[k]), iv = stable(inc[k]);
+    if (lv === bv) out[k] = clone(inc[k] ?? null);             // only changed there: take theirs
+    else if (iv === bv || iv === lv) continue;                  // only changed here: keep mine
+    else if (ID_ARRAYS.has(k) && Array.isArray(local[k]) && Array.isArray(inc[k])){
+      const oldIds = new Set((old?.[k]||[]).map(x=>x.id)), mine = new Set(local[k].map(x=>x.id)), theirs = new Set(inc[k].map(x=>x.id));
+      const added = inc[k].filter(x=>!mine.has(x.id) && !oldIds.has(x.id));                 // new there
+      const kept = local[k].filter(x=>!(oldIds.has(x.id) && !theirs.has(x.id)));           // not deleted there
+      out[k] = k === 'comments' || k === 'history' ? [...added, ...kept].sort((a,b)=>(b.at||0)-(a.at||0)) : [...kept, ...added];
+    }
+    // both changed the same field: keep mine (last write wins)
+  }
+  return out;
+}
+function merge(kind, docs){
+  const norm = kind === 'boards' ? normBoard : normIssue, ser = kind === 'boards' ? serBoard : serIssue, f = kind === 'boards' ? 'order' : 'rank';
+  assignMissing(S[kind], f);
+  const local = new Map(S[kind].map(x=>[x.id,x])), seen = new Set(), out = [];
+  let openChanged = false;
+  for (const {id, data} of docs){
+    if (!SAFE_ID.test(id) || !data || typeof data !== 'object') continue;
+    seen.add(id);
+    const inc = norm(id, data), incJson = stable(ser(inc)), loc = local.get(id);
+    if (!loc){
+      if (synced[kind].has(id)) continue;                     // deleted here; the delete is about to be written
+      synced[kind].set(id, incJson); base[kind].set(id, clone(inc)); out.push(inc);
+      if (id === openId) openChanged = true;
+      continue;
+    }
+    if (incJson !== synced[kind].get(id)){                    // changed on the server since we last saw it
+      const dirty = stable(ser(loc)) !== synced[kind].get(id);
+      replaceInPlace(loc, dirty ? merge3(loc, base[kind].get(id), inc) : inc);
+      if (id === openId) openChanged = true;
+    }
+    synced[kind].set(id, incJson); base[kind].set(id, clone(inc));
+    out.push(loc);
+  }
+  for (const loc of S[kind]) if (!seen.has(loc.id)){
+    if (synced[kind].has(loc.id)){ synced[kind].delete(loc.id); base[kind].delete(loc.id); if (loc.id === openId) openChanged = true; } // deleted elsewhere
+    else out.push(loc);                                          // created here, not written yet
+  }
+  out.sort(byRank(f));
+  S[kind] = out;
+  if (out.some(o=>stable(ser(o)) !== synced[kind].get(o.id))) save();
+  return openChanged;
+}
+function onBoards(docs){ merge('boards', docs); loaded.boards = true; dataArrived(); if (screen === 'app') scheduleRender(); }
+function onIssues(docs){
+  const ch = merge('issues', docs); loaded.issues = true; dataArrived();
+  if (ch && modalKind === 'issue'){
+    if (!get(openId)){ closeModal(true); toast(t('toast.issueGoneElsewhere')); }
+    else if (!$('.dialog :focus:is(input,textarea)', layer)) refreshIssue();
+  }
+}
+function normTypes(m){
+  const types = Array.isArray(m?.types) && m.types.length ? m.types : TYPES_BASIC();
+  return types.filter(Boolean).map(x=>({id:sid(x.id, 't'+uid()), name:String(x.name||''), color:isHex(x.color)?x.color:'#4BADE8', glyph:GLYPHS[x.glyph]?x.glyph:'check'}));
+}
+function cleanReqs(list){
+  return (list||[]).filter(r=>r && REQ_ID.test(String(r.id)) && REQ_STATUS.includes(r.status)).map(r=>({
+    id:String(r.id), fromUid:String(r.fromUid||''), fromEmail:String(r.fromEmail||''), fromName:String(r.fromName||''), toEmail:String(r.toEmail||''),
+    status:r.status, role:r.role === 'viewer' ? 'viewer' : r.role === 'editor' ? 'editor' : null, wsId:sid(r.wsId) || null, wsName:String(r.wsName||''),
+    created:Number(r.created)||0, decidedAt:Number(r.decidedAt)||0}));
+}
+function cleanWs(list){
+  return (list||[]).filter(w=>w && SAFE_ID.test(String(w.id))).map(w=>{
+    const roles = {}; for (const [e, r] of Object.entries(w.roles && typeof w.roles === 'object' ? w.roles : {})) if (r === 'editor' || r === 'viewer') roles[String(e)] = r;
+    return {id:String(w.id), name:String(w.name||''), logo:isImg(w.logo) ? w.logo : null, ownerUid:String(w.ownerUid||''), ownerEmail:String(w.ownerEmail||''),
+      ownerName:String(w.ownerName||''), roles, memberEmails:Array.isArray(w.memberEmails) ? w.memberEmails.map(String) : [], created:Number(w.created)||0, lang:w.lang === 'en' ? 'en' : 'he'};
+  });
+}
+function onMeta(m){
+  const types = normTypes(m), incJson = stable({types});
+  const dirty = synced.meta !== null && stable(serMeta()) !== synced.meta;
+  if (!dirty) S.types = types;
+  synced.meta = incJson;
+  loaded.meta = true; dataArrived(); if (screen === 'app') scheduleRender();
+}
+function dataArrived(){ if (loaded.boards && loaded.issues && loaded.meta){ showApp(); scheduleRender(); } }
+
+/* ---------- writing ---------- */
+let flushTimer = 0;
+function save(){ clearTimeout(flushTimer); flushTimer = setTimeout(flush, 350); }
+function fixRanks(arr, field, step=1000){
+  let prev = -Infinity, need = false;
+  for (let k = 0; k < arr.length; k++){
+    const it = arr[k];
+    if (typeof it[field] === 'number' && it[field] > prev){ prev = it[field]; continue; }
+    let next = Infinity;
+    for (let m = k+1; m < arr.length; m++){ const r = arr[m][field]; if (typeof r === 'number' && r > prev){ next = r; break; } }
+    it[field] = next === Infinity ? (prev === -Infinity ? 0 : prev + step) : (prev === -Infinity ? next - step : (prev + next)/2);
+    if (next !== Infinity && prev !== -Infinity && next - prev < 1e-6) need = true;
+    prev = it[field];
+  }
+  if (need) arr.forEach((it,k)=>{ it[field] = k*step; });
+}
+function flush(){
+  clearTimeout(flushTimer);
+  if (!wsId || !canEdit() || !store) return;
+  if (!loaded.boards || !loaded.issues || !loaded.meta){ save(); return; } // never write before everything has loaded
+  assignMissing(S.issues, 'rank'); assignMissing(S.boards, 'order');
+  const ops = [];
+  for (const [kind, ser] of [['boards', serBoard], ['issues', serIssue]]){
+    const ids = new Set();
+    for (const o of S[kind]){
+      ids.add(o.id);
+      const data = ser(o), json = stable(data);
+      if (synced[kind].get(o.id) !== json){ ops.push({type:'set', col:kind, id:o.id, data:JSON.parse(JSON.stringify(data))}); synced[kind].set(o.id, json); base[kind].set(o.id, clone(o)); }
+    }
+    for (const id of [...synced[kind].keys()]) if (!ids.has(id)){ ops.push({type:'del', col:kind, id}); synced[kind].delete(id); base[kind].delete(id); }
+  }
+  const mj = stable(serMeta());
+  if (synced.meta !== mj){ ops.push({type:'set', col:'meta', id:'settings', data:serMeta()}); synced.meta = mj; }
+  if (!ops.length) return;
+  const target = wsId;
+  store.commit(target, ops).catch(err=>{
+    console.error(err);
+    if (target !== wsId){ toast(t('toast.saveFailed')); return; }
+    toast(err?.code === 'permission-denied' ? t('toast.noPermission') : t('toast.saveFailed'));
+    openWorkspace(wsId, true);
+  });
+}
+addEventListener('pagehide', flush);
+document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState === 'hidden') flush(); });
+
+function touch(i, text){
+  i.updated = Date.now();
+  if (text){ i.history.unshift({id:uid(), at:Date.now(), text, by:user?.name || ''}); if (i.history.length > 200) i.history.length = 200; }
+}
+
+/* ---------- columns shared by name across boards (All boards view) ---------- */
+function vColumns(){
+  const map = new Map();
+  S.boards.forEach(b=>{ const L = b.columns.length; b.columns.forEach((c,ix)=>{
+    const k = c.name.trim().toLowerCase();
+    if (!map.has(k)) map.set(k, {id:'v:'+k, name:c.name, cat:c.cat, pos:0, n:0, first:map.size});
+    const v = map.get(k); v.pos += L > 1 ? ix/(L-1) : 0; v.n++;
+  }); });
+  return [...map.values()].map(v=>({...v, pos:v.pos/v.n})).sort((a,b)=>a.pos-b.pos || a.first-b.first);
+}
+const vKey = i=>'v:'+colOf(i).name.trim().toLowerCase();
+function resolveStatus(b, status){
+  if (!status || !status.startsWith('v:')) return colById(b,status) || null;
+  const k = status.slice(2), v = vColumns().find(x=>x.id===status);
+  return b.columns.find(c=>c.name.trim().toLowerCase()===k) || (v && b.columns.find(c=>c.cat===v.cat)) || null;
+}
+
+let query = '', qf = new Set(), typeFilter = null, platFilter = null, openId = null, tab = 'comments', cmtDraft = '', editingCid = null, lastPct = null;
+let lastCreateType = null;
+let composer = null, composerText = '', composerType = null, composerBoard = null, composerFocus = false;
+let sortBy = {k:'status', dir:1};
+let fx = {};
+
+/* ================= Screens ================= */
+const appEl = $('#app'), gateEl = $('#gate');
+function showGate(html){
+  screen = html ? 'gate' : screen;
+  appEl.hidden = true; gateEl.hidden = false; gateEl.innerHTML = html;
+  document.title = 'Workbench';
+}
+function showApp(){
+  if (screen === 'app') return;
+  screen = 'app'; gateEl.hidden = true; gateEl.innerHTML = ''; appEl.hidden = false;
+}
+function gateFrame(inner){
+  return `<div class="gate-top"><button class="btn subtle" data-act="lang">${I.globe}<span>${getLang()==='he'?'English':'עברית'}</span></button>
+      <button class="btn icon subtle" data-act="theme" aria-label="${esc(t('nav.theme'))}">${effectiveTheme()==='dark'?I.sun:I.moon}</button></div>
+    <div class="gate-card">
+      <div class="gate-brand"><img class="gate-logo brand-ink" src="assets/mccann-valley.png" alt="McCann Valley"><span class="gate-app"><span class="logo">${APP_MARK}</span>Workbench</span></div>
+      ${inner}
+    </div>`;
+}
+function renderSignIn(){
+  screen = 'signin';
+  const demo = store?.mode === 'demo';
+  showGate(gateFrame(`
+    <h1>${esc(t('gate.welcome'))}</h1>
+    <p class="gate-sub">${esc(t('gate.sub'))}</p>
+    ${demo ? `<div class="demo-note">${esc(isConfigured ? t('gate.demoForced') : t('gate.demo'))}</div>
+      <form class="demo-form" data-form="demo-signin" novalidate>
+        <label class="fld">${esc(t('gate.demoName'))}<input name="name" autocomplete="name" data-bidi></label>
+        <label class="fld">${esc(t('gate.demoEmail'))}<input name="email" type="email" inputmode="email" autocomplete="email" dir="ltr" required></label>
+        <button class="btn primary big">${esc(t('gate.demoSignIn'))}</button>
+      </form>`
+    : `<button class="btn google big" data-act="signin">${I.key}<span>${esc(t('gate.google'))}</span></button>
+       <p class="gate-fine">${esc(t('gate.fine'))}</p>`}
+  `));
+}
+function renderLoading(msg){
+  screen = 'loading';
+  showGate(`<div class="gate-loading"><span class="spinner"></span><span>${esc(msg || t('gate.loading'))}</span></div>`);
+}
+function localImportCandidate(){
+  try {
+    const raw = JSON.parse(localStorage.getItem('workbench.board.v2'));
+    if (!raw) return null;
+    const boards = Array.isArray(raw.boards) ? raw.boards.length : 0, issues = Array.isArray(raw.issues) ? raw.issues.length : 0;
+    return issues || boards ? {raw, boards, issues} : null;
+  } catch(e){ return null; }
+}
+function renderWelcome(){
+  screen = 'welcome';
+  const owned = (wsList||[]).some(w=>w.ownerUid === user.uid);
+  const canCancel = (wsList||[]).length > 0;
+  const pending = outgoing.filter(r=>r.status === 'pending'), declined = outgoing.filter(r=>r.status === 'declined');
+  const local = localImportCandidate();
+  showGate(gateFrame(`
+    <div class="who">${avatar(user,'lg')}<div><b data-bidi>${esc(user.name)}</b><span dir="ltr">${esc(user.email)}</span></div><button class="btn subtle sm" data-act="signout">${esc(t('acc.signout'))}</button></div>
+    <h1>${esc(t('welcome.title'))}</h1>
+    <p class="gate-sub">${esc(t('welcome.sub'))}</p>
+    ${pending.length ? `<div class="req-status">${pending.map(r=>`<div class="req-row">${I.mail}<span>${t('welcome.waiting', {email:`<b dir="ltr">${esc(r.toEmail)}</b>`})}</span><button class="btn subtle sm" data-act="req-cancel" data-id="${esc(r.id)}">${esc(t('btn.cancelRequest'))}</button></div>`).join('')}</div>` : ''}
+    ${declined.length ? `<div class="req-status declined">${declined.map(r=>`<div class="req-row">${I.x}<span>${t('welcome.declined', {email:`<b dir="ltr">${esc(r.toEmail)}</b>`})}</span><button class="btn subtle sm" data-act="req-cancel" data-id="${esc(r.id)}">${esc(t('btn.dismiss'))}</button></div>`).join('')}</div>` : ''}
+    ${owned ? '' : !mayCreate ? `<div class="note-box">${I.key}<span>${esc(t('welcome.noCreate'))}</span></div>` : `<label class="fld ws-name-fld">${esc(t('welcome.wsName'))}<input id="wsNameIn" maxlength="100" data-bidi value="${esc(t('welcome.wsNameDefault', {name:(user.name||'').split(' ')[0]||user.email}))}" autocomplete="off"></label>
+    <div class="choices">
+      <button class="choice" data-act="ws-create" data-kind="template">
+        <span class="ch-ico tpl">${I.board}</span><span class="ch-txt"><b>${esc(t('welcome.tpl'))}</b><span>${esc(t('welcome.tplSub'))}</span>
+        <span class="ch-tags">${PPC_CLIENTS.map(([n])=>`<i dir="rtl">${esc(n)}</i>`).join('')}</span></span></button>
+      <button class="choice" data-act="ws-create" data-kind="empty">
+        <span class="ch-ico">${I.plus}</span><span class="ch-txt"><b>${esc(t('welcome.empty'))}</b><span>${esc(t('welcome.emptySub'))}</span></span></button>
+      ${local ? `<button class="choice" data-act="ws-create" data-kind="local">
+        <span class="ch-ico">${I.up}</span><span class="ch-txt"><b>${esc(t('welcome.local'))}</b><span>${esc(t('welcome.localSub', {b:local.boards, i:local.issues}))}</span></span></button>` : ''}
+    </div>`}
+    <div class="choice-req">
+      <div class="cr-head"><span class="ch-ico">${I.users}</span><span class="ch-txt"><b>${esc(t('welcome.ask'))}</b><span>${esc(t('welcome.askSub'))}</span></span></div>
+      <form class="cr-form" data-form="request" novalidate><input class="inp" name="email" type="email" inputmode="email" dir="ltr" placeholder="name@example.com" aria-label="${esc(t('welcome.askEmail'))}" autocomplete="off"><button class="btn">${esc(t('btn.sendRequest'))}</button></form>
+      <em class="ed-err" id="reqErr" hidden></em>
+    </div>
+    ${canCancel ? `<button class="btn subtle back-btn" data-act="welcome-back">${esc(t('btn.backToBoards'))}</button>` : ''}
+  `));
+  const n = $('#wsNameIn'); if (n) n.dataset.touched = '';
+}
+
+/* ================= Auth & workspaces ================= */
+async function onAuth(u){
+  unsubWs?.(); unsubIn?.(); unsubOut?.(); unsubData?.();
+  unsubWs = unsubIn = unsubOut = unsubData = null;
+  wsList = null; wsId = null; ws = null; incoming = []; outgoing = [];
+  user = u;
+  if (!u){ renderSignIn(); return; }
+  renderLoading();
+  mayCreate = await store.canCreate(u.email);
+  if (user !== u) return;
+  unsubIn = store.watchIncoming(u.email, list=>{ incoming = cleanReqs(list); renderBell(); if (modalKind === 'wsSettings') renderWsSettingsBody(); }, onListenErr);
+  unsubOut = store.watchOutgoing(u.uid, list=>{ outgoing = cleanReqs(list); if (screen === 'welcome') renderWelcome(); }, onListenErr);
+  unsubWs = store.watchWorkspaces(u, list=>{
+    const before = wsList;
+    wsList = cleanWs(list).sort((a,b)=>(a.ownerUid===u.uid?0:1)-(b.ownerUid===u.uid?0:1) || String(a.name).localeCompare(String(b.name)));
+    if (awaitOpen && wsList.some(w=>w.id===awaitOpen)){ const id = awaitOpen; awaitOpen = null; openWorkspace(id); return; }
+    if (wsId && !wsList.some(w=>w.id===wsId)){ toast(t('toast.lostAccess')); wsId = null; ws = null; unsubData?.(); unsubData = null; if (screen === 'app') screen = 'loading'; }
+    if (screen === 'welcome' && before){
+      const newOne = wsList.find(w=>!before.some(b=>b.id===w.id));
+      if (newOne && !wsId){ openWorkspace(newOne.id); return; }
+      if (wsId) ws = wsList.find(w=>w.id===wsId);
+      renderWelcome(); return;
+    }
+    if (wsId){ ws = wsList.find(w=>w.id===wsId); applyRole(); renderNavWs(); if (modalKind === 'wsSettings') renderWsSettingsBody(); scheduleRender(); return; }
+    if (screen === 'loading' && awaitOpen !== null) return;
+    if (!wsList.length){ renderWelcome(); return; }
+    const pick = wsList.find(w=>w.id===P.lastWs) || wsList.find(w=>w.ownerUid===u.uid) || wsList[0];
+    openWorkspace(pick.id);
+  }, onDataErr);
+}
+function onListenErr(e){ console.error(e); if (e?.code === 'permission-denied') return; toast(t('toast.loadFailed')); }
+function onDataErr(e){
+  console.error(e);
+  if (screen === 'app'){ if (e?.code !== 'permission-denied') toast(t('toast.loadFailed')); return; }
+  screen = 'error';
+  showGate(gateFrame(`<h1>${esc(t('gate.loadErrTitle'))}</h1><p class="gate-sub">${esc(e?.code === 'permission-denied' ? t('gate.loadErrPerm') : t('gate.loadErrNet'))}</p>
+    <button class="btn primary big" data-act="retry">${esc(t('btn.retry'))}</button><button class="btn subtle back-btn" data-act="signout">${esc(t('acc.signout'))}</button>`));
+}
+function openWorkspace(id, reload){
+  flush();
+  unsubData?.(); unsubData = null;
+  wsId = id; ws = (wsList||[]).find(w=>w.id===id) || null; P.lastWs = id; savePrefs();
+  S = {boards:[], issues:[], types:[]}; synced.boards.clear(); synced.issues.clear(); synced.meta = null; base.boards.clear(); base.issues.clear();
+  loaded = {boards:false, issues:false, meta:false}; composer = null; openId = null;
+  if (modalKind) closeModal(true);
+  if (!reload){ screen = 'loading'; renderLoading(t('gate.opening', {name:ws?.name||''})); }
+  applyRole(); renderNavWs();
+  unsubData = store.watchData(id, {boards:onBoards, issues:onIssues, meta:onMeta}, onDataErr);
+}
+function applyRole(){
+  document.body.classList.toggle('ro', !!ws && !canEdit());
+  const chip = $('#roChip'); if (chip) chip.hidden = !ws || canEdit();
+}
+async function createWorkspace(kind){
+  const nameIn = $('#wsNameIn');
+  let name = (nameIn?.value || '').trim() || t('welcome.wsNameDefault', {name:(user.name||'').split(' ')[0]||user.email});
+  if (kind === 'template' && nameIn && !nameIn.dataset.touched) name = t('welcome.tplWsName');
+  renderLoading(t('gate.creating'));
+  awaitOpen = '';
+  try {
+    const id = await store.createWorkspace({name:name.slice(0,100), logo:null, ownerUid:user.uid, ownerEmail:user.email, ownerName:String(user.name||'').slice(0,200), roles:{}, memberEmails:[], created:Date.now(), lang:getLang()});
+    const ops = [];
+    let boards = [], issues = [], types;
+    if (kind === 'template'){
+      const logos = await Promise.all(PPC_CLIENTS.map(([,,,f])=>fetch(`assets/clients/${f}.png`).then(r=>r.ok ? r.blob() : null).then(b=>b && readLogo(b)).catch(()=>null)));
+      boards = PPC_CLIENTS.map(([n,k,c],ix)=>({id:'b-'+uid(), name:n, key:k, color:c, logo:logos[ix] || null, seq:0, order:ix*1000, columns:COLS_PPC()}));
+      types = TYPES_PPC();
+    } else if (kind === 'local'){
+      const conv = convertLocal(localImportCandidate()?.raw);
+      boards = conv.boards; issues = conv.issues; types = conv.types;
+    } else {
+      types = TYPES_BASIC();
+    }
+    boards.forEach(b=>{ const {id:bid, ...d} = b; ops.push({type:'set', col:'boards', id:bid, data:d}); });
+    issues.forEach(i=>{ const {id:iid, ...d} = i; ops.push({type:'set', col:'issues', id:iid, data:d}); });
+    ops.push({type:'set', col:'meta', id:'settings', data:{types}});
+    await store.commit(id, ops);
+    P.active[id] = boards[0]?.id || ALL; savePrefs();
+    if ((wsList||[]).some(w=>w.id===id)){ awaitOpen = null; openWorkspace(id); } else awaitOpen = id;
+    if (kind === 'local') toast(t('toast.localImported', {n:issues.length}));
+  } catch(e){ console.error(e); awaitOpen = null; toast(t('toast.createFailed')); renderWelcome(); }
+}
+function convertLocal(raw){
+  const out = {boards:[], issues:[], types:TYPES_BASIC()};
+  if (!raw) return out;
+  const bmap = new Map();
+  (raw.boards||[]).forEach((b,ix)=>{ const nb = normBoard('b-'+uid(), {...b, order:ix*1000}); bmap.set(String(b?.id), nb); out.boards.push(nb); });
+  if (!out.boards.length && Array.isArray(raw.issues)){
+    const nb = normBoard('b-'+uid(), {name:'Workbench', key:'WB', columns:[{id:'todo',name:t('tpl.col.todo'),cat:'todo'},{id:'doing',name:t('tpl.col.doing'),cat:'doing'},{id:'wait',name:t('cat.wait'),cat:'wait'},{id:'done',name:t('tpl.col.done'),cat:'done'}]});
+    out.boards.push(nb); (raw.issues||[]).forEach(i=>{ bmap.set(String(i?.boardId||'_'), nb); });
+  }
+  if (Array.isArray(raw.types) && raw.types.length) out.types = raw.types.filter(Boolean).map(x=>({id:sid(x.id, 't'+uid()), name:String(x.name||''), color:isHex(x.color)?x.color:'#4BADE8', glyph:GLYPHS[x.glyph]?x.glyph:'check'}));
+  const tset = new Set(out.types.map(x=>x.id));
+  (raw.issues||[]).forEach((i,ix)=>{
+    if (!i || typeof i !== 'object') return;
+    const b = bmap.get(String(i.boardId)) || bmap.get('_') || out.boards[0]; if (!b) return;
+    const n = normIssue('i-'+uid(), {...i, boardId:b.id, rank:ix*1000});
+    if (!b.columns.some(c=>c.id===n.status)) n.status = b.columns[0].id;
+    if (!tset.has(n.type)) n.type = out.types[0].id;
+    b.seq = Math.max(b.seq, n.num);
+    out.issues.push(n);
+  });
+  out.boards.forEach(b=>{ out.issues.filter(i=>i.boardId===b.id && !i.num).forEach(i=>{ i.num = ++b.seq; }); });
+  return out;
+}
+
+/* ================= Rendering ================= */
+const board = $('#board'), listview = $('#listview');
+function matches(i){
+  const q = query.trim().toLowerCase();
+  if (q){
+    const hay = [i.title, key(i), i.desc, boardOf(i).name, i.color ? colorName(i.color) : '', ...i.labels, ...i.subtasks.map(s=>s.text), ...i.links.map(l=>l.title+' '+l.url)].join('\n').toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  const tday = today(), done = isDone(i);
+  if (qf.has('overdue') && !(i.due && i.due < tday && !done)) return false;
+  if (qf.has('week') && !(i.due && i.due >= tday && i.due <= addDays(7) && !done)) return false;
+  if (qf.has('high') && PRANK[i.priority] > 1) return false;
+  if (typeFilter && i.type !== typeFilter) return false;
+  if (platFilter === 'none' ? !!i.color : (platFilter && i.color !== platFilter)) return false;
+  return true;
+}
+const filtering = ()=>!!query.trim() || qf.size > 0 || !!typeFilter || !!platFilter;
+function dueClass(i){
+  if (!i.due || isDone(i)) return '';
+  if (i.due < today()) return 'over';
+  if (i.due <= addDays(1)) return 'soon';
+  return '';
+}
+function dueLabel(i){
+  if (!isDone(i)){ if (i.due === today()) return t('due.today'); if (i.due === addDays(1)) return t('due.tomorrow'); }
+  return fmtDay(i.due);
+}
+function ageInfo(i){
+  const done = isDone(i), end = done && i.doneAt ? iso(new Date(i.doneAt)) : today(), n = daysBetween(i.start, end);
+  const short = x=>t('age.short', {n:x});
+  if (n < 0) return {n, short:t('age.in', {n:-n}), long:t('age.starts', {date:fmtDay(i.start), d:tn('days', -n)}), cls:'future'};
+  if (done) return {n, short:short(n), long:t('age.took', {d:tn('days', n), from:fmtDay(i.start), to:fmtDay(end)}), cls:'done'};
+  return {n, short:short(n), long:n === 0 ? t('age.startedToday') : t('age.running', {date:fmtDay(i.start), d:tn('days', n)}), cls:n >= 14 ? 'long' : ''};
+}
+function visibleLabels(i){ return isAll() ? i.labels : i.labels.filter(l=>!sameText(l, boardOf(i).name)); }
+function cardHTML(i){
+  const n = i.subtasks.length, d = i.subtasks.filter(s=>s.done).length, dc = dueClass(i), done = isDone(i), age = ageInfo(i), labels = visibleLabels(i);
+  const cls = ['card']; if (i.color) cls.push('has-color');
+  if (fx.new===i.id) cls.push('is-new'); if (fx.land===i.id) cls.push('is-land'); if (fx.done===i.id) cls.push('is-done-fx');
+  return `<article class="${cls.join(' ')}" data-id="${i.id}" tabindex="0"${i.color?` style="--cc:${i.color}" title="${esc(colorName(i.color))}"`:''} aria-label="${esc(key(i)+': '+(i.title||t('issue.untitled')))}">
+    <p class="c-title" data-bidi>${hl(i.title || t('issue.untitled'))}</p>
+    <button class="c-menu" data-act="card-menu" data-id="${i.id}" aria-label="${esc(t('card.actions', {key:key(i)}))}" aria-haspopup="menu">${I.more}</button>
+    ${labels.length ? `<div class="c-labels">${labels.map(l=>`<span class="lbl" data-bidi>${hl(l)}</span>`).join('')}</div>` : ''}
+    <div class="c-dates">${i.due ? `<span class="due ${dc}" title="${esc(t('due.title', {date:fmtDay(i.due)}))}">${I.cal}${dc==='over'?esc(t('due.overduePrefix')):''}${esc(dueLabel(i))}</span>` : ''}<span class="age ${age.cls}" title="${esc(age.long)}">${I.clock}<bdi>${esc(age.short)}</bdi></span></div>
+    <div class="c-foot">${isAll() ? bAv(boardOf(i),'xs') : ''}${typeIcon(i.type)}<span class="key${done?' done':''}">${hl(key(i))}</span>
+      ${n ? `<span class="meta-n${d===n?' all':''}" title="${esc(t('card.subtasks', {d, n}))}">${I.sub}<bdi>${d}/${n}</bdi></span>` : ''}
+      ${i.comments.length ? `<span class="meta-n" title="${esc(tn('card.comments', i.comments.length))}">${I.comment}${i.comments.length}</span>` : ''}
+      ${i.links.length ? `<span class="meta-n" title="${esc(tn('card.links', i.links.length))}">${I.link}${i.links.length}</span>` : ''}
+      <span class="c-right">${i.points!=null ? `<span class="pts" title="${esc(t('f.points'))}">${esc(i.points)}</span>` : ''}${prioIcon(i.priority)}</span>
+    </div>
+  </article>`;
+}
+function composerHTML(){
+  if (typeOf(composerType)?.id !== composerType) composerType = S.types[0]?.id;
+  if (!boardById(composerBoard)) composerBoard = (boardById(P.lastBoard?.[wsId]) || S.boards[0])?.id;
+  return `<form class="composer" data-form="inline">
+    <textarea data-bidi rows="2" placeholder="${esc(t('composer.ph'))}" aria-label="${esc(t('composer.aria'))}">${esc(composerText)}</textarea>
+    <div class="comp-row">
+      <label class="type-sel" title="${esc(t('f.type'))}">${typeIcon(composerType)}${I.chev}
+        <select aria-label="${esc(t('f.type'))}" data-c="type">${S.types.map(x=>`<option value="${x.id}"${x.id===composerType?' selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
+      ${isAll() ? `<label class="type-sel" title="${esc(t('f.board'))}">${bAv(boardById(composerBoard),'xs')}${I.chev}<select aria-label="${esc(t('f.board'))}" data-c="board">${S.boards.map(b=>`<option value="${b.id}"${b.id===composerBoard?' selected':''}>${esc(b.name)}</option>`).join('')}</select></label>` : ''}
+      <span class="comp-hint">${esc(t('composer.hint'))}</span>
+      <button type="submit" class="btn primary sm">${esc(t('btn.create'))}</button>
+    </div>
+  </form>`;
+}
+let prevCounts = {};
+let lastCols = null;
+function renderBoard(){
+  const all = isAll(), b = curBoard();
+  if (!b){
+    lastCols = null;
+    board.innerHTML = `<div class="empty-state wide">${I.board}<b>${esc(t('empty.noBoards'))}</b><span>${esc(canEdit() ? t('empty.noBoardsSub') : t('empty.noBoardsRo'))}</span>${canEdit() ? `<button class="btn primary" data-act="new-board">${I.plus}${esc(t('btn.createBoard'))}</button>` : ''}</div>`;
+    return;
+  }
+  const scroll = {}; $$('.list',board).forEach(l=>scroll[l.dataset.status] = l.scrollTop);
+  const pool = scopeIssues(), vis = pool.filter(matches), f = filtering();
+  const cols = all ? vColumns() : b.columns, inCol = all ? (i,c)=>vKey(i)===c.id : (i,c)=>i.status===c.id;
+  if (composer && !cols.some(c=>c.id===composer)) composer = null;
+  const edit = canEdit();
+  const html = cols.map(c=>{
+    const items = vis.filter(i=>inCol(i,c)), total = pool.filter(i=>inCol(i,c)).length;
+    const empty = !pool.length && c === cols[0] ? `<div class="empty-hint">${esc(all ? t('empty.allNone') : edit ? t('empty.board') : t('empty.boardRo'))}</div>` : '';
+    return `<section class="col" data-col="${esc(c.id)}" data-cat="${c.cat}" aria-label="${esc(c.name)}">
+      <header class="col-head"><span class="col-name" data-bidi title="${esc(c.name)}">${esc(c.name)}</span><span class="col-count" data-s="${esc(c.id)}"><bdi>${f ? esc(t('col.countOf', {a:items.length, b:total})) : total}</bdi></span>${c.cat==='done'&&items.length?`<span class="col-done" title="${esc(catName('done'))}">${I.check}</span>${edit?`<button class="btn icon subtle sm col-arch" data-act="archive-col" data-status="${esc(c.id)}" aria-label="${esc(t('col.archiveAll', {name:c.name}))}" title="${esc(tn('col.archiveN', items.length))}">${I.archive}</button>`:''}`:''}</header>
+      <div class="list" data-status="${esc(c.id)}">${items.map(cardHTML).join('') || empty}</div>
+      ${edit ? `<div class="col-foot">${composer===c.id ? composerHTML() : `<button class="add-inline" data-act="add-inline" data-status="${esc(c.id)}">${I.plus}${esc(t('btn.createIssue'))}</button>`}</div>` : '<div class="col-foot ro-foot"></div>'}
+    </section>`;
+  });
+  // Only touch the columns that changed: keeps renders cheap and avoids re-triggering animations elsewhere.
+  const layoutKey = wsId + '|' + (all ? ALL : b.id) + '|' + cols.map(c=>c.id).join(',');
+  const secs = board.children;
+  if (lastCols && lastCols.key === layoutKey && secs.length === html.length){
+    html.forEach((h,ix)=>{ if (lastCols.html[ix] !== h){ const tpl = document.createElement('template'); tpl.innerHTML = h.trim(); secs[ix].replaceWith(tpl.content.firstElementChild); } });
+  } else board.innerHTML = html.join('');
+  lastCols = {key:layoutKey, html};
+  $$('.list',board).forEach(l=>{ if (scroll[l.dataset.status] && l.scrollTop !== scroll[l.dataset.status]) l.scrollTop = scroll[l.dataset.status]; });
+  const scopeKey = all ? ALL : b.id;
+  cols.forEach(c=>{
+    const k = wsId+scopeKey+c.id, n = pool.filter(i=>inCol(i,c)).length;
+    if (prevCounts[k] !== undefined && n > prevCounts[k] && !reduce) $(`.col-count[data-s="${CSS.escape(c.id)}"]`,board)?.classList.add('bump');
+    prevCounts[k] = n;
+  });
+  if (composer){
+    const ta = $('.composer textarea',board); autosize(ta);
+    if (composerFocus){ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); composerFocus = false;
+      const list = $(`.list[data-status="${CSS.escape(composer)}"]`,board); if (list) list.scrollTop = list.scrollHeight; }
+  }
+  const nc = fx.new && $(`.card[data-id="${fx.new}"]`,board);
+  if (nc) nc.scrollIntoView({block:'nearest', inline:'nearest', behavior:reduce?'auto':'smooth'});
+}
+function sortVal(i,k){
+  switch(k){
+    case 'type': return typeOf(i.type).name.toLowerCase(); case 'key': return boardOf(i).key + String(i.num).padStart(6,'0'); case 'title': return i.title.toLowerCase();
+    case 'board': return boardOf(i).name.toLowerCase();
+    case 'status': return isAll() ? vColumns().findIndex(v=>v.id===vKey(i)) : boardOf(i).columns.indexOf(colOf(i)); case 'priority': return PRANK[i.priority];
+    case 'due': return i.due || '9999'; case 'days': return ageInfo(i).n; case 'points': return i.points==null ? Infinity : Number(i.points);
+    case 'updated': return -i.updated; case 'archived': return -(i.archivedAt||0);
+  }
+}
+function renderList(archive){
+  const all = isAll(), b = curBoard();
+  if (!b){ listview.innerHTML = `<div class="empty-state"><b>${esc(t('empty.noBoards'))}</b></div>`; return; }
+  const scope = S.issues.map((i,ix)=>[i,ix]).filter(([i])=>!!i.archived === !!archive && (all || i.boardId===b.id));
+  const vis = scope.filter(([i])=>matches(i));
+  const sk = archive && !['type','key','title','board','status','archived'].includes(sortBy.k) ? 'archived' : sortBy.k;
+  vis.sort((a,c)=>{ const x = sortVal(a[0],sk), y = sortVal(c[0],sk); return x===y ? a[1]-c[1] : (x<y?-1:1) * (sk===sortBy.k ? sortBy.dir : 1); });
+  if (!vis.length){
+    listview.innerHTML = archive
+      ? `<div class="empty-state"><b>${esc(scope.length ? t('empty.archiveFiltered') : all ? t('empty.archiveAll') : t('empty.archiveBoard'))}</b>${esc(scope.length ? t('empty.tryFilters') : t('empty.archiveHow'))}</div>`
+      : `<div class="empty-state"><b>${esc(scope.length ? t('empty.listFiltered') : all ? t('empty.listAll') : t('empty.listBoard'))}</b>${esc(scope.length ? t('empty.tryFilters') : canEdit() ? t('empty.listHow') : '')}</div>`;
+    return;
+  }
+  const cols = archive
+    ? [['type','th.type',''],['key','th.key',''],['title','th.summary',''],...(all?[['board','th.board','hide-m']]:[]),['status','th.status','hide-m'],['archived','th.archived','hide-m'],...(canEdit()?[['','','']]:[])]
+    : [['type','th.type',''],['key','th.key',''],['title','th.summary',''],...(all?[['board','th.board','hide-m']]:[]),['status','th.status',''],['priority','th.priority','hide-m'],['due','th.due','hide-m'],['days','th.days','hide-m'],['updated','th.updated','hide-m']];
+  const row = i=>{
+    const cells = {
+      type:`<td>${typeIcon(i.type)}</td>`,
+      key:`<td><span class="key${isDone(i)?' done':''}">${hl(key(i))}</span></td>`,
+      title:`<td class="t-sum" data-bidi>${i.color?`<span class="c-dot" style="--cc:${i.color}" title="${esc(colorName(i.color))}"></span>`:''}${hl(i.title||t('issue.untitled'))}${visibleLabels(i).map(l=>`<span class="lbl" data-bidi>${esc(l)}</span>`).join('')}</td>`,
+      board:`<td class="hide-m"><span class="t-board">${bAv(boardOf(i),'xs')}<span data-bidi>${esc(boardOf(i).name)}</span></span></td>`,
+      status:`<td${archive?' class="hide-m"':''}>${lozC(colOf(i))}</td>`,
+      priority:`<td class="hide-m"><span class="c-pri">${prioIcon(i.priority)}${esc(prioName(i.priority))}</span></td>`,
+      due:`<td class="hide-m">${i.due ? `<span class="due ${dueClass(i)}">${esc(dueLabel(i))}</span>` : `<span class="t-muted">${esc(t('none'))}</span>`}</td>`,
+      days:(()=>{ const a = ageInfo(i); return `<td class="hide-m"><span class="age ${a.cls}" title="${esc(a.long)}">${I.clock}<bdi>${esc(a.short)}</bdi></span></td>`; })(),
+      updated:`<td class="hide-m t-muted">${esc(ago(i.updated))}</td>`,
+      archived:`<td class="hide-m t-muted">${esc(fmtDay(iso(new Date(i.archivedAt))))}</td>`,
+      '':`<td class="t-act"><button class="btn sm" data-act="restore" data-id="${i.id}">${I.restore}${esc(t('btn.restore'))}</button></td>`
+    };
+    return `<tr data-id="${i.id}" tabindex="0">${cols.map(([k])=>cells[k]).join('')}</tr>`;
+  };
+  listview.innerHTML = `<table class="tbl"><thead><tr>${cols.map(([k,l,c])=>k ? `<th class="${c}"><button data-act="sort" data-k="${k}" class="${sk===k?'on':''}${sk===k&&sortBy.dir<0&&sk===sortBy.k?' desc':''}">${esc(t(l))}${I.arrow}</button></th>` : `<th><span class="sr">${esc(t('th.actions'))}</span></th>`).join('')}</tr></thead>
+  <tbody>${vis.map(([i])=>row(i)).join('')}</tbody></table>`;
+}
+function renderSide(){
+  const all = isAll(), b = curBoard(), edit = canEdit();
+  const openCount = id=>S.issues.filter(i=>(id===ALL || i.boardId===id) && !i.archived && !isDone(i)).length || '';
+  $('#boardList').innerHTML = (S.boards.length ? `<div class="board-item${all?' on':''}" role="button" tabindex="0" data-act="switch-board" data-id="${ALL}" aria-current="${all}">
+      <span class="b-av all">${I.grid}</span><span class="bi-name">${esc(t('nav.allBoards'))}</span><span class="bi-n">${openCount(ALL)}</span><span class="bi-sp"></span></div>` : '') +
+    S.boards.map(x=>`<div class="board-item${!all && b && x.id===b.id?' on':''}" role="button" tabindex="0" data-act="switch-board" data-id="${x.id}" aria-current="${!all && b && x.id===b.id}">
+      ${bAv(x)}<span class="bi-name" data-bidi>${esc(x.name)}</span>
+      <span class="bi-n">${openCount(x.id)}</span>
+      ${edit ? `<span class="bi-menu" role="button" tabindex="0" data-act="board-menu" data-id="${x.id}" aria-label="${esc(t('board.actions', {name:x.name}))}" aria-haspopup="menu">${I.more}</span>` : '<span class="bi-sp"></span>'}</div>`).join('');
+  const av = $('#projAv');
+  if (all || !b){
+    av.className = 'proj-av'; av.innerHTML = I.grid; av.style.setProperty('--bc', '#44546F');
+    $('#projName').textContent = all ? t('nav.allBoards') : (ws?.name || '');
+    const n = S.issues.filter(i=>!i.archived).length;
+    $('#projSub').textContent = t('side.allSub', {b:tn('boards', S.boards.length), i:tn('issues', n)});
+  } else {
+    if (isImg(b.logo)){ av.className = 'proj-av logo'; av.innerHTML = `<img src="${esc(b.logo)}" alt="">`; }
+    else { av.className = 'proj-av'; av.textContent = (b.name.trim()[0]||'B').toUpperCase(); av.style.setProperty('--bc', b.color); }
+    $('#projName').textContent = b.name;
+    $('#projSub').textContent = t('side.boardSub', {key:b.key, i:tn('issues', boardIssues(b).length)});
+  }
+  $('#crumbWs').textContent = ws?.name || '';
+  $('#crumbBoard').textContent = all ? t('nav.allBoards') : (b?.name || '');
+  $('#sideSettings').hidden = all || !b || !edit; $('#gearBtn').hidden = all || !b || !edit;
+  $('#sideTypes').hidden = !edit; $('#newBoardBtn').hidden = !edit; $('#sideImport').hidden = !edit;
+  $('#sideWs').hidden = !isOwner();
+  document.title = `${all ? t('nav.allBoards') : (b?.name || ws?.name || '')} - Workbench`;
+}
+function renderNavWs(){
+  const btn = $('#wsBtn'); if (!btn || !ws) return;
+  btn.innerHTML = `${isImg(ws.logo) ? `<span class="ws-logo"><img src="${esc(ws.logo)}" alt=""></span>` : ''}<span class="ws-name" data-bidi>${esc(ws.name)}</span>${I.chev}`;
+  const r = role();
+  $('#roChip').hidden = canEdit();
+  $('#roChip').textContent = t('role.viewOnly');
+  btn.title = r === 'owner' ? '' : t('ws.sharedBy', {name:ws.ownerName || ws.ownerEmail});
+  renderBell();
+  const av = $('#meBtn'); if (av && user) av.innerHTML = avatar(user);
+}
+function renderBell(){
+  const n = incoming.filter(r=>r.status==='pending').length, b = $('#bellBtn');
+  if (!b) return;
+  b.hidden = !n; $('#bellN').textContent = n || '';
+  b.title = tn('req.pendingN', n);
+}
+function render(){
+  if (screen !== 'app') return;
+  const v = P.view, all = isAll(), b = curBoard(), name = all ? t('nav.allBoards') : (b?.name || ws?.name || '');
+  board.hidden = v !== 'board'; listview.hidden = v === 'board';
+  const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : name;
+  $('#viewTitle').innerHTML = `${!all && b && isImg(b.logo) ? `<span class="h1-logo"><img src="${esc(b.logo)}" alt=""></span>` : ''}<span data-bidi>${esc(title)}</span>`;
+  $$('.side-item[data-view]').forEach(x=>x.classList.toggle('on', x.dataset.view===v));
+  if (typeFilter && !S.types.some(x=>x.id===typeFilter)) typeFilter = null;
+  if (v === 'board') renderBoard(); else renderList(v === 'archive');
+  renderSide();
+  const pool = scopeIssues(), open = pool.filter(i=>!isDone(i)), tday = today();
+  const over = open.filter(i=>i.due && i.due < tday).length;
+  const arch = S.issues.filter(i=>i.archived && (all || (b && i.boardId===b.id))).length;
+  $('#summary').textContent = v === 'archive' ? tn('summary.archived', arch) : pool.length ? tn('summary.open', open.length) + (over ? t('summary.overdueSuffix', {n:over}) : '') : '';
+  $$('.qf[data-qf]').forEach(x=>x.setAttribute('aria-pressed', qf.has(x.dataset.qf)));
+  const tf = $('#typeF'); tf.setAttribute('aria-pressed', !!typeFilter);
+  tf.innerHTML = esc(typeFilter ? t('filter.typeIs', {name:typeOf(typeFilter).name}) : t('filter.type')) + I.chev;
+  const pf = $('#platF'); pf.setAttribute('aria-pressed', !!platFilter);
+  pf.innerHTML = (platFilter === 'none' ? esc(t('filter.noPlatform')) : platFilter ? `<i class="pf-dot" style="--sw:${platFilter}"></i>${esc(colorName(platFilter))}` : esc(t('filter.platform'))) + I.chev;
+  $('#clearF').hidden = !filtering();
+  $('#createBtn').hidden = !canEdit() || !S.boards.length;
+  fx = {};
+}
+let rq = 0; const scheduleRender = ()=>{ cancelAnimationFrame(rq); rq = requestAnimationFrame(render); };
+function switchBoard(id){
+  if (id !== ALL && !boardById(id)) return;
+  if (activeKey() !== id){ P.active[wsId] = id; if (id !== ALL){ P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = id; } composer = null; composerText = ''; savePrefs(); }
+  render(); shell.classList.remove('side-open');
+  board.scrollLeft = 0;
+}
+
+/* ================= Moves ================= */
+function moveIssue(id, status, beforeId, opts={}){
+  if (!canEdit()) return;
+  const i = get(id); if (!i) return;
+  const b = boardOf(i), was = colOf(i), to = resolveStatus(b, status);
+  if (!to){
+    const v = vColumns().find(x=>x.id===status);
+    toast(t('toast.noSuchColumn', {board:b.name, col:v ? v.name : ''}));
+    render(); return;
+  }
+  const arr = S.issues; arr.splice(arr.indexOf(i),1);
+  const k = beforeId ? arr.findIndex(x=>x.id===beforeId) : -1;
+  k < 0 ? arr.push(i) : arr.splice(k,0,i);
+  i.rank = undefined;
+  if (was.id !== to.id){
+    i.status = to.id; touch(i, t('h.status', {from:was.name, to:to.name}));
+    if (to.cat === 'done' && was.cat !== 'done'){ fx.done = id; i.doneAt = Date.now(); } else fx.land = id;
+    if (to.cat !== 'done') i.doneAt = null;
+    if (opts.toast) toast(t('toast.moved', {key:key(i), col:to.name}));
+  } else { fx.land = id; i.updated = Date.now(); }
+  save(); render();
+  if (openId === id) refreshIssue();
+}
+function moveToBoard(i, boardId){
+  const from = boardOf(i), to = boardById(boardId); if (!to || from.id === to.id) return;
+  const oldKey = key(i), oldCol = colOf(i);
+  to.seq = Math.max(to.seq||0, ...S.issues.filter(x=>x.boardId===to.id).map(x=>x.num)) + 1; i.num = to.seq; i.boardId = to.id;
+  const nc = to.columns.find(c=>c.name.trim().toLowerCase()===oldCol.name.trim().toLowerCase()) || to.columns.find(c=>c.cat===oldCol.cat) || to.columns[0];
+  i.status = nc.id; if (nc.cat !== 'done') i.doneAt = null; else if (!i.doneAt) i.doneAt = Date.now();
+  i.labels = i.labels.map(l=>sameText(l, from.name) ? normLabel(to.name) : l);
+  touch(i, t('h.movedBoard', {from:from.name, key:oldKey, to:to.name}));
+  S.issues.splice(S.issues.indexOf(i),1); S.issues.push(i); i.rank = undefined;
+  save(); render(); refreshIssue();
+  toast(t('toast.movedBoard', {board:to.name, key:key(i)}), isAll() ? {} : {action:t('btn.goToBoard'), fn:()=>{ closeModal(); switchBoard(to.id); }});
+}
+function createIssue(d){
+  const b = boardById(d.boardId) || curBoard();
+  const col = resolveStatus(b, d.status) || b.columns[0];
+  b.seq = Math.max(b.seq||0, ...S.issues.filter(x=>x.boardId===b.id).map(x=>x.num)) + 1;
+  const now = Date.now();
+  const i = normIssue('i-'+uid(), {priority:'medium', start:today(), ...d, boardId:b.id, num:b.seq, status:col.id, doneAt:col.cat==='done' ? now : null,
+    created:now, updated:now, history:[{id:uid(), at:now, text:t('h.created'), by:user.name}]});
+  i.rank = undefined;
+  S.issues.push(i); fx.new = i.id; save(); render();
+  return i;
+}
+function deleteIssue(id){
+  const ix = S.issues.findIndex(i=>i.id===id); if (ix < 0) return;
+  const [i] = S.issues.splice(ix,1);
+  if (openId === id) closeModal(true);
+  save(); render();
+  toast(t('toast.deleted', {key:key(i)}), {action:t('btn.undo'), fn:()=>{ if (!boardById(i.boardId)) return toast(t('toast.boardGone')); S.issues.splice(Math.min(ix,S.issues.length),0,i); i.rank = undefined; fx.new = i.id; save(); render(); }});
+}
+function setColor(i, c){
+  i.color = isHex(c) ? c : null;
+  touch(i, i.color ? t('h.platform', {name:colorName(i.color)}) : t('h.platformNone'));
+  save(); render();
+}
+function archiveIssues(list, msg){
+  if (!list.length) return;
+  const now = Date.now();
+  list.forEach(i=>{ i.archived = true; i.archivedAt = now; touch(i, t('h.archived')); });
+  if (list.some(i=>i.id===openId)) closeModal();
+  save(); render();
+  toast(msg, {action:t('btn.undo'), fn:()=>{ list.forEach(i=>{ i.archived = false; i.archivedAt = null; touch(i, t('h.restored')); }); save(); render(); }});
+}
+function restoreIssue(i){
+  i.archived = false; i.archivedAt = null; touch(i, t('h.restored')); fx.new = i.id;
+  save(); render(); refreshIssue();
+  toast(t('toast.restored', {key:key(i), col:colOf(i).name}));
+}
+
+/* ================= Drag & drop ================= */
+let drag = null, settling = false, suppressClick = false;
+board.addEventListener('click', e=>{
+  const card = e.target.closest('.card');
+  if (!card || e.target.closest('button') || suppressClick || settling) return;
+  openIssue(card.dataset.id);
+});
+board.addEventListener('pointerdown', e=>{
+  if (settling || e.button !== 0 || !canEdit()) return;
+  const card = e.target.closest('.card'); if (!card || e.target.closest('button')) return;
+  drag = {card, id:card.dataset.id, sx:e.clientX, sy:e.clientY, x:e.clientX, y:e.clientY, touch:e.pointerType!=='mouse', active:false, timer:0};
+  if (drag.touch) drag.timer = setTimeout(()=>{ if (drag && !drag.active) begin(); }, 280);
+});
+window.addEventListener('pointermove', e=>{
+  if (!drag) return;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (!drag.active){
+    const dist = Math.hypot(drag.x-drag.sx, drag.y-drag.sy);
+    if (drag.touch){ if (dist > 8){ clearTimeout(drag.timer); drag = null; } }
+    else if (dist > 4) begin();
+  }
+});
+window.addEventListener('pointerup', ()=>end(false));
+window.addEventListener('pointercancel', ()=>end(true));
+document.addEventListener('touchmove', e=>{ if (drag && drag.active) e.preventDefault(); }, {passive:false});
+board.addEventListener('contextmenu', e=>{ if (e.target.closest('.card')) e.preventDefault(); });
+function begin(){
+  lastCols = null;
+  const card = drag.card, r = card.getBoundingClientRect();
+  closePop();
+  drag.active = true; drag.ox = drag.sx - r.left; drag.oy = drag.sy - r.top;
+  if (drag.touch && navigator.vibrate) navigator.vibrate(10);
+  const g = card.cloneNode(true); g.classList.remove('is-new','is-land','is-done-fx'); g.classList.add('ghost'); g.removeAttribute('tabindex'); g.style.width = r.width+'px';
+  g.style.transform = `translate(${r.left}px,${r.top}px)`;
+  document.body.appendChild(g); drag.ghost = g;
+  const ph = document.createElement('div'); ph.className = 'ph'; ph.style.height = r.height+'px';
+  card.after(ph); drag.ph = ph; card.classList.add('is-hidden');
+  drag.col = card.closest('.col'); drag.col.classList.add('over');
+  document.body.classList.add('dragging');
+  const tick = ()=>{ if (!drag || !drag.active) return; autoscroll(); follow(); drag.raf = requestAnimationFrame(tick); };
+  drag.raf = requestAnimationFrame(tick);
+}
+function nextCard(el){ let n = el.nextElementSibling; while (n && (!n.classList.contains('card') || n.classList.contains('is-hidden'))) n = n.nextElementSibling; return n; }
+function flip(fn){
+  if (reduce){ fn(); return; }
+  const els = $$('.card:not(.is-hidden)', board), r0 = new Map(els.map(e=>[e,e.getBoundingClientRect()]));
+  fn();
+  for (const e of els){
+    const a = r0.get(e), b = e.getBoundingClientRect(), dx = a.left-b.left, dy = a.top-b.top;
+    if (Math.abs(dx) > .5 || Math.abs(dy) > .5)
+      e.animate([{transform:`translate(${dx}px,${dy}px)`},{transform:'translate(0,0)'}], {duration:200, easing:'cubic-bezier(.2,.8,.2,1)'});
+  }
+}
+function follow(){
+  const {x, y, ghost, ph} = drag;
+  ghost.style.transform = `translate(${x-drag.ox}px,${y-drag.oy}px)`;
+  let col = document.elementFromPoint(x,y)?.closest('.col');
+  if (!col){ const br = board.getBoundingClientRect(); if (y > br.top && y < br.bottom) col = $$('.col',board).find(c=>{ const r = c.getBoundingClientRect(); return x >= r.left && x <= r.right; }); }
+  if (col && col !== drag.col){ drag.col?.classList.remove('over'); col.classList.add('over'); drag.col = col; }
+  if (!col) return;
+  const list = $('.list',col), lr = list.getBoundingClientRect(), ly = y - lr.top + list.scrollTop;
+  let before = null;
+  for (const c of $$('.card:not(.is-hidden)', list)){ if (ly < c.offsetTop + c.offsetHeight/2){ before = c; break; } }
+  const same = ph.parentElement === list && nextCard(ph) === before;
+  if (!same){ $('.empty-hint',list)?.remove(); flip(()=>{ before ? list.insertBefore(ph,before) : list.appendChild(ph); }); }
+}
+function autoscroll(){
+  const {x, y} = drag, E = 60, br = board.getBoundingClientRect();
+  if (x < br.left + E) board.scrollLeft -= Math.ceil((br.left+E-x)/5);
+  else if (x > br.right - E) board.scrollLeft += Math.ceil((x-br.right+E)/5);
+  if (drag.col){
+    const list = $('.list',drag.col), lr = list.getBoundingClientRect();
+    if (y < lr.top + 40) list.scrollTop -= Math.ceil((lr.top+40-y)/4);
+    else if (y > lr.bottom - 40 && y < lr.bottom + 80) list.scrollTop += Math.ceil((y-lr.bottom+40)/4);
+  }
+}
+function end(cancel){
+  if (!drag) return;
+  clearTimeout(drag.timer); cancelAnimationFrame(drag.raf);
+  const d = drag; drag = null;
+  if (!d.active) return;
+  suppressClick = true; setTimeout(()=>{ suppressClick = false; }, 60);
+  document.body.classList.remove('dragging');
+  $$('.col.over',board).forEach(c=>c.classList.remove('over'));
+  if (cancel){ d.ghost.remove(); d.ph.remove(); d.card.classList.remove('is-hidden'); return; }
+  const list = d.ph.parentElement, status = list.dataset.status, beforeId = nextCard(d.ph)?.dataset.id;
+  if (reduce){ d.ghost.remove(); moveIssue(d.id, status, beforeId); return; }
+  settling = true;
+  const r = d.ph.getBoundingClientRect();
+  d.ghost.style.transition = 'transform .18s cubic-bezier(.2,.8,.2,1), rotate .18s, scale .18s, box-shadow .18s';
+  d.ghost.classList.add('dropping');
+  d.ghost.style.transform = `translate(${r.left}px,${r.top}px)`;
+  setTimeout(()=>{ d.ghost.remove(); settling = false; moveIssue(d.id, status, beforeId);
+    if (isMobile()) $(`.col[data-col="${CSS.escape(status)}"]`,board)?.scrollIntoView({behavior:'smooth', inline:'center', block:'nearest'}); }, 180);
+}
+board.addEventListener('keydown', e=>{
+  const card = e.target.closest('.card'); if (!card || e.target !== card) return;
+  if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); openIssue(card.dataset.id); }
+  if (e.shiftKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && canEdit()){
+    e.preventDefault();
+    const i = get(card.dataset.id), forward = (e.key === 'ArrowRight') !== rtl(), step = forward ? 1 : -1;
+    const cs = isAll() ? vColumns() : boardOf(i).columns, cur = isAll() ? cs.findIndex(v=>v.id===vKey(i)) : cs.indexOf(colOf(i)), ix = cur + step;
+    if (ix < 0 || ix >= cs.length) return;
+    moveIssue(i.id, cs[ix].id, null);
+    $(`.card[data-id="${i.id}"]`,board)?.focus();
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    const sib = e.key === 'ArrowDown' ? card.nextElementSibling : card.previousElementSibling;
+    if (sib?.classList.contains('card')) sib.focus();
+  }
+});
+listview.addEventListener('click', e=>{ if (e.target.closest('button')) return; const tr = e.target.closest('tbody tr'); if (tr) openIssue(tr.dataset.id); });
+listview.addEventListener('keydown', e=>{ const tr = e.target.closest('tbody tr'); if (tr && e.target === tr && (e.key==='Enter'||e.key===' ')){ e.preventDefault(); openIssue(tr.dataset.id); } });
+
+/* ================= Inline composer ================= */
+function openComposer(status){ composer = status; composerText = ''; composerFocus = true; render(); }
+function closeComposer(){ if (!composer) return; composer = null; composerText = ''; render(); }
+board.addEventListener('input', e=>{ if (e.target.matches('.composer textarea')){ composerText = e.target.value; autosize(e.target); } });
+board.addEventListener('change', e=>{
+  const el = e.target; if (!el.matches('.composer select')) return;
+  if (el.dataset.c === 'type'){ composerType = el.value; el.closest('.type-sel').firstElementChild.outerHTML = typeIcon(composerType); }
+  if (el.dataset.c === 'board'){ composerBoard = el.value; el.closest('.type-sel').firstElementChild.outerHTML = bAv(boardById(composerBoard),'xs'); }
+  $('.composer textarea',board).focus();
+});
+board.addEventListener('keydown', e=>{
+  if (!e.target.matches('.composer textarea')) return;
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); e.target.form.requestSubmit(); }
+  if (e.key === 'Escape'){ e.stopPropagation(); closeComposer(); }
+});
+board.addEventListener('submit', e=>{
+  e.preventDefault();
+  if (!canEdit()) return;
+  const txt = composerText.trim(); if (!txt){ $('.composer textarea',board).focus(); return; }
+  const b = isAll() ? boardById(composerBoard) : curBoard();
+  if (!resolveStatus(b, composer)){ toast(t('toast.noColumnHere', {board:b.name})); return; }
+  composerText = ''; composerFocus = true;
+  createIssue({title:txt, type:composerType, boardId:b.id, status:composer, labels:[normLabel(b.name)]});
+});
+document.addEventListener('pointerdown', e=>{
+  if (composer && !e.target.closest('.composer') && !e.target.closest('[data-act="add-inline"]') && !e.target.closest('#layer') && !composerText.trim()) closeComposer();
+}, true);
+
+/* ================= Popover ================= */
+const pop = $('#pop'); let popAnchor = null;
+function openPop(anchor, html, id){
+  if (popAnchor === anchor){ closePop(); return; }
+  closePop();
+  pop.innerHTML = html; pop.dataset.id = id; pop.hidden = false; popAnchor = anchor;
+  anchor.setAttribute('aria-expanded','true');
+  placePop();
+  requestAnimationFrame(()=>{ pop.classList.add('on'); $('.menu-i, .plat-b, .sw, .glyph-btn',pop)?.focus({preventScroll:true}); });
+}
+function placePop(){
+  if (!popAnchor) return;
+  const r = popAnchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  const want = rtl() ? r.right - w : r.left;
+  const left = Math.max(8, Math.min(want, innerWidth - w - 8));
+  let top = r.bottom + 4;
+  const up = top + h > innerHeight - 8 && r.top - h - 4 >= 8;
+  if (up) top = r.top - h - 4; else top = Math.max(8, Math.min(top, innerHeight - h - 8));
+  pop.classList.toggle('up', up);
+  pop.style.left = left+'px'; pop.style.top = top+'px';
+}
+function closePop(){
+  if (!popAnchor) return;
+  popAnchor.setAttribute('aria-expanded','false'); popAnchor = null;
+  pop.classList.remove('on'); setTimeout(()=>{ if (!popAnchor) pop.hidden = true; }, 150);
+}
+document.addEventListener('pointerdown', e=>{ if (popAnchor && !pop.contains(e.target) && !popAnchor.contains(e.target)) closePop(); });
+addEventListener('resize', ()=>closePop());
+pop.addEventListener('keydown', e=>{
+  const items = $$('.menu-i, .plat-b, .sw, .glyph-btn',pop), ix = items.indexOf(document.activeElement);
+  const nextKey = rtl() ? 'ArrowLeft' : 'ArrowRight', prevKey = rtl() ? 'ArrowRight' : 'ArrowLeft';
+  if (e.key === 'ArrowDown' || e.key === nextKey){ e.preventDefault(); items[(ix+1)%items.length].focus(); }
+  if (e.key === 'ArrowUp' || e.key === prevKey){ e.preventDefault(); items[(ix-1+items.length)%items.length].focus(); }
+  if (e.key === 'Tab'){ closePop(); }
+});
+const chk = on=>on ? `<span class="chk-mark">${I.check}</span>` : '';
+function statusMenu(i, withExtras){
+  const b = boardOf(i), edit = canEdit();
+  if (!edit) return `<button class="menu-i" role="menuitem" data-act="open-issue">${I.open}${esc(t('menu.open'))}</button>
+    <button class="menu-i" role="menuitem" data-act="copy-key">${I.copy}${esc(t('menu.copyKey'))}</button>`;
+  return `<div class="menu-h">${esc(withExtras ? t('menu.moveTo') : t('menu.changeStatus'))}</div>${b.columns.filter(c=>c.id!==i.status).map(c=>`<button class="menu-i" role="menuitem" data-act="set-status" data-status="${c.id}">${lozC(c)}</button>`).join('')}
+  ${withExtras ? `<div class="menu-sep"></div><div class="menu-h">${esc(t('f.platform'))}</div><div class="pop-pad">${platformPicker('set-color', i.color)}</div>
+  <div class="menu-sep"></div>
+  <button class="menu-i" role="menuitem" data-act="open-issue">${I.open}${esc(t('menu.open'))}</button>
+  <button class="menu-i" role="menuitem" data-act="copy-key">${I.copy}${esc(t('menu.copyKey'))}</button>
+  <button class="menu-i" role="menuitem" data-act="archive-issue">${I.archive}${esc(t('menu.archive'))}</button>
+  <button class="menu-i danger" role="menuitem" data-act="del-issue">${I.trash}${esc(t('menu.delete'))}</button>` : ''}`;
+}
+function wsMenu(){
+  const owned = (wsList||[]).some(w=>w.ownerUid===user.uid);
+  return `<div class="menu-h">${esc(t('ws.your'))}</div>${(wsList||[]).map(w=>{
+      const r = w.ownerUid===user.uid ? 'owner' : (w.roles||{})[user.email] || 'viewer';
+      return `<button class="menu-i ws-i" role="menuitem" data-act="switch-ws" data-id="${esc(w.id)}">${isImg(w.logo) ? `<span class="ws-logo sm"><img src="${esc(w.logo)}" alt=""></span>` : `<span class="b-av" style="--bc:#44546F">${initialOf(w.name)}</span>`}
+        <span class="ws-i-txt"><b data-bidi>${esc(w.name)}</b><small>${esc(r==='owner' ? t('role.owner') : t('ws.sharedRole', {role:t('role.'+r), name:w.ownerName||w.ownerEmail}))}</small></span>${chk(w.id===wsId)}</button>`;
+    }).join('')}
+    <div class="menu-sep"></div>
+    ${owned ? '' : `<button class="menu-i" role="menuitem" data-act="welcome">${I.plus}${esc(t('ws.createOwn'))}</button>`}
+    <button class="menu-i" role="menuitem" data-act="request-access">${I.users}${esc(t('ws.requestAccess'))}</button>
+    ${isOwner() ? `<button class="menu-i" role="menuitem" data-act="ws-settings">${I.gear}${esc(t('ws.settings'))}</button>` : ''}`;
+}
+function meMenu(){
+  return `<div class="me-head">${avatar(user,'lg')}<div><b data-bidi>${esc(user.name)}</b><span dir="ltr">${esc(user.email)}</span></div></div>
+    <div class="menu-sep"></div>
+    ${isOwner() ? `<button class="menu-i" role="menuitem" data-act="ws-settings">${I.users}${esc(t('ws.shareMenu'))}</button>` : ''}
+    <button class="menu-i" role="menuitem" data-act="request-access">${I.mail}${esc(t('ws.requestAccess'))}</button>
+    <button class="menu-i" role="menuitem" data-act="lang">${I.globe}${getLang()==='he'?'English':'עברית'}</button>
+    <button class="menu-i" role="menuitem" data-act="theme">${effectiveTheme()==='dark'?I.sun:I.moon}${esc(effectiveTheme()==='dark'?t('nav.light'):t('nav.dark'))}</button>
+    <div class="menu-sep"></div>
+    <button class="menu-i" role="menuitem" data-act="signout">${I.logout}${esc(t('acc.signout'))}</button>`;
+}
+
+/* ================= Modals ================= */
+const layer = $('#layer'), shell = $('#shell');
+let modalKind = null, lastFocus = null, openFocusId = null;
+function showModal(html, kind, size=''){
+  closePop();
+  if (!modalKind) lastFocus = document.activeElement;
+  layer.innerHTML = `<div class="backdrop"><div class="dialog ${size}" role="dialog" aria-modal="true" tabindex="-1">${html}</div></div>`;
+  modalKind = kind; shell.inert = true; $('.nav').inert = true;
+  const bd = $('.backdrop',layer); let downOnBd = false;
+  bd.addEventListener('pointerdown', e=>{ downOnBd = e.target === bd; });
+  bd.addEventListener('click', e=>{ if (e.target === bd && downOnBd) closeModal(); });
+  $$('textarea',layer).forEach(autosize);
+  return $('.dialog',layer);
+}
+function closeModal(instant){
+  if (!modalKind) return;
+  closePop();
+  if (modalKind === 'issue'){
+    const i = get(openId);
+    if (i && !i.title.trim() && canEdit()){ i.title = t('issue.untitled'); save(); render(); }
+    openId = null; editingCid = null;
+  }
+  bDraft = null; tDraft = null; confirmFn = null;
+  modalKind = null; shell.inert = false; $('.nav').inert = false;
+  const bd = $('.backdrop',layer);
+  if (!bd) return;
+  if (instant || reduce){ layer.innerHTML = ''; }
+  else { bd.classList.add('closing'); bd.style.pointerEvents = 'none'; setTimeout(()=>{ if (bd.isConnected && bd.classList.contains('closing')) bd.remove(); }, 170); }
+  if (lastFocus && lastFocus.isConnected) lastFocus.focus({preventScroll:true});
+  else { const c = openFocusId && $(`.card[data-id="${openFocusId}"]`,board); c?.focus({preventScroll:true}); }
+}
+function rerender(el, html){
+  const a = document.activeElement, ak = a?.dataset?.k, sel = ak && a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null;
+  el.innerHTML = html;
+  if (ak){ const n = $(`[data-k="${CSS.escape(ak)}"]`, layer); if (n){ n.focus({preventScroll:true}); if (sel) try{ n.setSelectionRange(...sel); }catch(e){} } }
+}
+const head = (title, extra='')=>`<div class="m-head"><h2>${esc(title)}</h2>${extra}<button type="button" class="btn icon subtle" data-act="close-modal" aria-label="${esc(t('btn.close'))}">${I.x}</button></div>`;
+
+/* ----- Confirm ----- */
+let confirmFn = null;
+function openConfirm({title, text, ok, fn}){
+  confirmFn = fn;
+  const dlg = showModal(`${head(title)}<p class="confirm-p">${text}</p>
+    <div class="m-foot" style="border:0"><span class="sp"></span><button class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button><button class="btn danger" data-act="confirm-ok">${esc(ok)}</button></div>`, 'confirm', 'tiny');
+  dlg.setAttribute('aria-label', title);
+  setTimeout(()=>$('.m-foot [data-act="close-modal"]',dlg)?.focus(), 30);
+}
+
+/* ----- Issue view ----- */
+function openIssue(id){
+  const i = get(id); if (!i) return;
+  if (composer && !composerText.trim()){ composer = null; render(); }
+  openId = id; openFocusId = id; tab = 'comments'; cmtDraft = ''; editingCid = null; lastPct = 0;
+  const dlg = showModal(issueHTML(i), 'issue');
+  dlg.setAttribute('aria-label', `${key(i)}: ${i.title}`);
+  afterIssueRender();
+  dlg.focus({preventScroll:true});
+}
+function pctOf(i){ const n = i.subtasks.length; return n ? Math.round(i.subtasks.filter(s=>s.done).length / n * 100) : 0; }
+function linksHTML(i, edit){
+  return `<ul class="links">${i.links.map(l=>`<li data-lid="${l.id}">${I.link}<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" data-bidi>${esc(l.title || hostOf(l.url))}</a><span class="l-host">${l.title ? esc(hostOf(l.url)) : ''}</span>${edit ? `<button class="btn icon subtle sm l-del" data-act="link-del" aria-label="${esc(t('links.remove'))}" title="${esc(t('links.remove'))}">${I.x}</button>` : ''}</li>`).join('')}</ul>`;
+}
+function issueHTML(i){
+  const n = i.subtasks.length, pct = pctOf(i), col = colOf(i), b = boardOf(i), age = ageInfo(i), edit = canEdit(), dis = edit ? '' : ' disabled';
+  const companies = [...new Set([...S.boards.map(x=>normLabel(x.name)), ...S.issues.flatMap(x=>x.labels)])].filter(l=>!i.labels.includes(l)).sort();
+  return `
+  <div class="m-head">
+    <div class="m-crumb">${bAv(b)}<span class="crumb-b" data-bidi>${esc(b.name)}</span><span class="crumb-sep">/</span>${typeIcon(i.type)}<button class="link-btn key" data-act="copy-key" title="${esc(t('menu.copyKey'))}">${esc(key(i))}</button>${i.archived?`<span class="loz arch">${esc(t('issue.archived'))}</span>`:''}${!edit?`<span class="loz ro-loz">${esc(t('role.viewOnly'))}</span>`:''}</div>
+    <div class="m-actions">
+      ${edit ? (i.archived ? `<button class="btn sm" data-act="restore">${I.restore}${esc(t('btn.restore'))}</button>` : `<button class="btn icon subtle" data-act="archive-issue" aria-label="${esc(t('menu.archive'))}" title="${esc(t('menu.archive'))}">${I.archive}</button>`)
+        + `<button class="btn icon subtle" data-act="del-issue" aria-label="${esc(t('menu.delete'))}" title="${esc(t('menu.delete'))}">${I.trash}</button>` : ''}
+      <button class="btn icon subtle" data-act="close-modal" aria-label="${esc(t('btn.close'))}" title="${esc(t('btn.closeEsc'))}">${I.x}</button>
+    </div>
+  </div>
+  <div class="m-body">
+    <div class="m-title"><textarea class="sum" data-k="sum" data-f="title" rows="1" data-bidi aria-label="${esc(t('f.summary'))}" placeholder="${esc(t('f.summary'))}"${edit?'':' readonly'}>${esc(i.title)}</textarea></div>
+    <div class="m-main">
+      <section class="m-sec" style="margin-top:12px">
+        <h3>${esc(t('f.desc'))}</h3>
+        <textarea class="desc" rows="1" data-k="desc" data-f="desc" data-bidi aria-label="${esc(t('f.desc'))}" placeholder="${esc(edit ? t('f.descPh') : t('f.descNone'))}"${edit?'':' readonly'}>${esc(i.desc)}</textarea>
+      </section>
+      <section class="m-sec">
+        <div class="sec-head"><h3>${esc(t('f.links'))}</h3>${i.links.length ? `<span class="sec-meta">${i.links.length}</span>` : ''}</div>
+        ${linksHTML(i, edit)}
+        ${edit ? `<form class="link-add" data-form="link" novalidate>
+          <input class="inp" data-k="l-url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" dir="ltr" placeholder="${esc(t('links.ph'))}" aria-label="${esc(t('links.url'))}" autocomplete="off">
+          <input class="inp" data-k="l-title" data-bidi placeholder="${esc(t('links.textPh'))}" aria-label="${esc(t('links.text'))}" autocomplete="off">
+          <button class="btn">${esc(t('links.add'))}</button>
+        </form>
+        <em class="ed-err" id="linkErr" hidden>${esc(t('links.err'))}</em>` : (i.links.length ? '' : `<p class="muted-p">${esc(t('links.none'))}</p>`)}
+      </section>
+      <section class="m-sec">
+        <div class="sec-head"><h3>${esc(t('f.subtasks'))}</h3>${n ? `<span class="sec-meta" id="stMeta">${esc(t('st.pct', {n:pct}))}</span>` : ''}</div>
+        ${n ? `<div class="pbar"><b></b></div>` : ''}
+        <ul class="sts">${i.subtasks.map(s=>stHTML(s, edit)).join('')}</ul>
+        ${edit ? `<form class="st-add" data-form="subtask">${I.plus}<input data-k="st-add" placeholder="${esc(t('st.add'))}" aria-label="${esc(t('st.new'))}" data-bidi autocomplete="off"></form>` : (n ? '' : `<p class="muted-p">${esc(t('st.none'))}</p>`)}
+      </section>
+      <section class="m-sec">
+        <div class="sec-head"><h3>${esc(t('f.activity'))}</h3>
+          <div class="tabs" role="tablist">
+            <button class="tab" role="tab" aria-selected="${tab==='comments'}" data-act="tab" data-tab="comments">${esc(t('tab.comments'))}${i.comments.length?` (${i.comments.length})`:''}</button>
+            <button class="tab" role="tab" aria-selected="${tab==='history'}" data-act="tab" data-tab="history">${esc(t('tab.history'))}</button>
+          </div></div>
+        ${tab === 'comments' ? commentsHTML(i, edit) : historyHTML(i)}
+      </section>
+    </div>
+    <aside class="m-side">
+      <div class="side-top"><button class="status-btn ${col.cat}" data-act="status-menu" aria-haspopup="menu" aria-label="${esc(t('f.statusIs', {name:col.name}))}"${dis}><span data-bidi>${esc(col.name)}</span>${edit?I.chev:''}</button>
+        <span class="age big ${age.cls}" title="${esc(age.long)}">${I.clock}${esc(age.long)}</span></div>
+      <div class="details">
+        <h3 class="det-head">${esc(t('f.details'))}</h3>
+        <dl class="det">
+          <dt>${esc(t('f.type'))}</dt><dd><span class="with-ico">${typeIcon(i.type)}<select class="ctl" data-f="type" aria-label="${esc(t('f.type'))}"${dis}>${S.types.map(x=>`<option value="${x.id}"${x.id===i.type?' selected':''}>${esc(x.name)}</option>`).join('')}</select></span></dd>
+          <dt>${esc(t('f.priority'))}</dt><dd><span class="with-ico">${prioIcon(i.priority)}<select class="ctl" data-f="priority" aria-label="${esc(t('f.priority'))}"${dis}>${PRIOS.map(k=>`<option value="${k}"${k===i.priority?' selected':''}>${esc(prioName(k))}</option>`).join('')}</select></span></dd>
+          <dt>${esc(t('f.start'))}</dt><dd>${edit ? `<input class="ctl" type="date" data-f="start" value="${esc(i.start)}" aria-label="${esc(t('f.start'))}">` : `<span class="ro-val">${esc(fmtDay(i.start))}</span>`}</dd>
+          <dt>${esc(t('f.due'))}</dt><dd>${edit ? `<input class="ctl" type="date" data-f="due" value="${esc(i.due)}" aria-label="${esc(t('f.due'))}">` : `<span class="ro-val${i.due?'':' t-muted'}">${esc(i.due ? fmtDay(i.due) : t('none'))}</span>`}${i.due && edit ? `<button class="btn icon subtle sm" data-act="clear-due" aria-label="${esc(t('f.clearDue'))}" title="${esc(t('f.clearDue'))}">${I.x}</button>` : ''}</dd>
+          <dt>${esc(t('f.company'))}</dt><dd><div class="labels-edit${edit?'':' ro'}">${i.labels.map(l=>`<span class="chip" data-bidi>${esc(l)}${edit?`<button data-act="label-del" data-l="${esc(l)}" aria-label="${esc(t('company.remove', {name:l}))}">${I.x}</button>`:''}</span>`).join('')}${edit ? `<input class="lbl-in" data-k="lbl" data-bidi placeholder="${i.labels.length?'':esc(t('company.add'))}" list="lblList" aria-label="${esc(t('company.add'))}" autocomplete="off">` : (i.labels.length ? '' : `<span class="t-muted">${esc(t('none'))}</span>`)}</div>
+            <datalist id="lblList">${companies.map(l=>`<option value="${esc(l)}">`).join('')}</datalist></dd>
+          <dt class="full">${esc(t('f.platform'))}</dt><dd class="full">${edit ? platformPicker('set-color', i.color) : (i.color ? `<span class="plat-b on" style="--sw:${i.color}"><i></i>${esc(colorName(i.color))}</span>` : `<span class="t-muted">${esc(t('plat.none'))}</span>`)}</dd>
+          <dt>${esc(t('f.points'))}</dt><dd>${edit ? `<input class="ctl" type="number" min="0" step="0.5" inputmode="decimal" data-f="points" value="${i.points??''}" placeholder="${esc(t('none'))}" aria-label="${esc(t('f.points'))}">` : `<span class="ro-val${i.points==null?' t-muted':''}">${esc(i.points ?? t('none'))}</span>`}</dd>
+          ${S.boards.length > 1 && edit ? `<dt>${esc(t('f.board'))}</dt><dd><select class="ctl" data-f="board" aria-label="${esc(t('f.board'))}">${S.boards.map(x=>`<option value="${x.id}"${x.id===i.boardId?' selected':''}>${esc(x.name)}</option>`).join('')}</select></dd>` : ''}
+        </dl>
+      </div>
+      <p class="m-stamp">${esc(t('stamp.created', {date:fmtTime(i.created)}))}<br>${esc(t('stamp.updated', {ago:ago(i.updated)}))}${i.archived ? `<br>${esc(t('stamp.archived', {date:fmtTime(i.archivedAt)}))}` : ''}</p>
+    </aside>
+  </div>`;
+}
+const stHTML = (s, edit=true, cls='')=>`<li class="${s.done?'done':''} ${cls}" data-sid="${s.id}">
+  <button class="chk" data-act="st-toggle" aria-pressed="${s.done}" aria-label="${esc(s.done?t('st.undone'):t('st.done'))}"${edit?'':' disabled'}>${I.tick}</button>
+  <input class="st-text" value="${esc(s.text)}" data-bidi aria-label="${esc(t('st.aria'))}" autocomplete="off"${edit?'':' readonly'}>
+  ${edit ? `<button class="btn icon subtle sm st-del" data-act="st-del" aria-label="${esc(t('st.delete'))}" title="${esc(t('st.delete'))}">${I.x}</button>` : ''}</li>`;
+function commentsHTML(i, edit){
+  const mine = c=>!c.by || c.by.uid === user.uid || isOwner();
+  return `${edit ? `<div class="cmt-new">${avatar(user,'lg')}<div class="cmt-box">
+      <textarea data-k="cmt" rows="1" data-bidi placeholder="${esc(t('cmt.ph'))}" aria-label="${esc(t('cmt.ph'))}">${esc(cmtDraft)}</textarea>
+      <div class="cmt-actions"><button class="btn primary sm" data-act="cmt-save">${esc(t('btn.save'))}</button><button class="btn subtle sm" data-act="cmt-cancel">${esc(t('btn.cancel'))}</button><span class="hint">${esc(t('cmt.hint'))}</span></div>
+    </div></div>` : ''}
+    ${!i.comments.length && !edit ? `<p class="muted-p">${esc(t('cmt.none'))}</p>` : ''}
+    <ol class="cmts">${i.comments.map(c=>{ const by = c.by || {name:ws?.ownerName||'', email:ws?.ownerEmail||''};
+      return `<li data-cid="${c.id}" class="${fx.cmt===c.id?'in':''}">${avatar(by,'lg')}<div class="cmt-body">
+      <div class="cmt-meta"><b data-bidi>${esc(by.name||by.email)}</b><time title="${esc(fmtTime(c.at))}">${esc(ago(c.at))}</time>${c.edited?`<span>${esc(t('cmt.edited'))}</span>`:''}</div>
+      ${editingCid === c.id
+        ? `<textarea class="cmt-edit" rows="1" data-k="cmt-edit" data-bidi aria-label="${esc(t('cmt.editAria'))}">${esc(c.text)}</textarea><div class="cmt-actions"><button class="btn primary sm" data-act="cmt-update">${esc(t('btn.save'))}</button><button class="btn subtle sm" data-act="cmt-edit-cancel">${esc(t('btn.cancel'))}</button></div>`
+        : `<p data-bidi>${linkify(esc(c.text))}</p>${edit && mine(c) ? `<div class="cmt-links"><button class="link-btn" data-act="cmt-edit">${esc(t('btn.edit'))}</button><button class="link-btn" data-act="cmt-del">${esc(t('btn.delete'))}</button></div>` : ''}`}
+    </div></li>`; }).join('')}</ol>`;
+}
+function historyHTML(i){
+  if (!i.history.length) return `<p class="muted-p">${esc(t('hist.none'))}</p>`;
+  return `<ol class="hist">${i.history.map(h=>`<li><span class="h-ico">${I.clock}</span><div><p data-bidi>${h.by ? `<b data-bidi>${esc(h.by)}</b>${getLang()==='he'?':':''} ` : ''}${esc(h.text)}</p><time title="${esc(fmtTime(h.at))}">${esc(ago(h.at))}</time></div></li>`).join('')}</ol>`;
+}
+function setBar(pct){
+  const b = $('.pbar b',layer); if (!b) { lastPct = pct; return; }
+  b.style.width = (lastPct ?? 0) + '%';
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{ b.style.width = pct + '%'; }));
+  lastPct = pct;
+}
+function afterIssueRender(){
+  $$('textarea',layer).forEach(autosize);
+  const i = get(openId); if (i) setBar(pctOf(i));
+}
+function refreshIssue(){
+  if (modalKind !== 'issue') return;
+  const i = get(openId); if (!i) return closeModal();
+  const dlg = $('.dialog',layer), body = $('.m-body',dlg), st = body?.scrollTop || 0;
+  rerender(dlg, issueHTML(i));
+  $('.m-body',dlg).scrollTop = st;
+  afterIssueRender();
+  fx.cmt = null;
+}
+
+/* ----- Create dialog ----- */
+function openCreate(status){
+  if (!canEdit()) return toast(t('toast.viewOnly'));
+  if (!S.boards.length) return openBoardSettings(null);
+  const b = isAll() ? (boardById(P.lastBoard?.[wsId]) || S.boards[0]) : curBoard();
+  if (typeOf(lastCreateType)?.id !== lastCreateType) lastCreateType = S.types[0]?.id;
+  const col = resolveStatus(b, status) || b.columns[0];
+  const companies = [...new Set([...S.boards.map(x=>normLabel(x.name)), ...S.issues.flatMap(x=>x.labels)])].sort();
+  const dlg = showModal(`<form data-form="create" novalidate style="display:contents">
+    ${head(t('create.title'))}
+    <div class="c-body">
+      <p class="req-note">${t('create.req', {star:'<span class="req">*</span>'})}</p>
+      <div class="grid2">
+        <label class="fld">${esc(t('f.board'))}<select name="board" data-prev="${esc(b.name)}">${S.boards.map(x=>`<option value="${x.id}"${x.id===b.id?' selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
+        <label class="fld">${esc(t('f.status'))}<select name="status">${b.columns.map(c=>`<option value="${c.id}"${c.id===col.id?' selected':''}>${esc(c.name)}</option>`).join('')}</select></label>
+      </div>
+      <div class="grid2">
+        <label class="fld">${esc(t('f.type'))}<span class="with-ico">${typeIcon(lastCreateType)}<select name="type">${S.types.map(x=>`<option value="${x.id}"${x.id===lastCreateType?' selected':''}>${esc(x.name)}</option>`).join('')}</select></span></label>
+        <label class="fld">${esc(t('f.priority'))}<span class="with-ico">${prioIcon('medium')}<select name="priority">${PRIOS.map(k=>`<option value="${k}"${k==='medium'?' selected':''}>${esc(prioName(k))}</option>`).join('')}</select></span></label>
+      </div>
+      <label class="fld" id="sumFld"><span>${esc(t('f.summary'))} <span class="req" aria-hidden="true">*</span></span><input name="title" data-bidi autocomplete="off" required><em class="err" hidden>${esc(t('create.sumReq'))}</em></label>
+      <label class="fld">${esc(t('f.desc'))}<textarea name="desc" rows="3" data-bidi placeholder="${esc(t('create.descPh'))}"></textarea></label>
+      <div class="grid3">
+        <label class="fld">${esc(t('f.start'))}<input type="date" name="start" value="${today()}"></label>
+        <label class="fld">${esc(t('f.due'))}<input type="date" name="due"></label>
+        <label class="fld">${esc(t('f.points'))}<input type="number" name="points" min="0" step="0.5" inputmode="decimal" placeholder="${esc(t('none'))}"></label>
+      </div>
+      <label class="fld">${esc(t('f.company'))}<input name="labels" data-bidi list="lblList2" value="${esc(normLabel(b.name))}" placeholder="${esc(t('company.commaPh'))}" autocomplete="off"><datalist id="lblList2">${companies.map(l=>`<option value="${esc(l)}">`).join('')}</datalist></label>
+      <div class="fld">${esc(t('f.platform'))}<input type="hidden" name="color" value="">${platformPicker('create-color', null)}</div>
+    </div>
+    <div class="m-foot"><label class="chkline"><input type="checkbox" name="another">${esc(t('create.another'))}</label><span class="sp"></span>
+      <button type="button" class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button><button type="submit" class="btn primary">${esc(t('btn.create'))}</button></div>
+  </form>`, 'create', 'narrow');
+  dlg.setAttribute('aria-label', t('create.title'));
+  if (!coarse()) setTimeout(()=>$('[name="title"]',dlg)?.focus(), 60);
+}
+function submitCreate(form){
+  const f = new FormData(form), title = String(f.get('title')||'').trim();
+  const fld = $('#sumFld',form);
+  if (!title){ fld.classList.add('invalid'); $('.err',fld).hidden = false; $('[name="title"]',form).focus(); return; }
+  const pts = String(f.get('points')||'').trim(), start = isISO(f.get('start')) ? f.get('start') : today();
+  const i = createIssue({title, boardId:f.get('board'), type:f.get('type'), status:f.get('status'), priority:f.get('priority'), due:f.get('due')||'', start,
+    points: pts === '' ? null : Number(pts), desc:String(f.get('desc')||'').trim(), color:isHex(f.get('color')) ? f.get('color') : null,
+    labels:[...new Set(String(f.get('labels')||'').split(',').map(normLabel).filter(Boolean))]});
+  lastCreateType = i.type; P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = i.boardId; savePrefs();
+  const onOther = !isAll() && i.boardId !== curBoard()?.id;
+  const view = ()=>{ if (!isAll() && i.boardId !== curBoard()?.id) switchBoard(i.boardId); openIssue(i.id); };
+  if (f.get('another')){ form.title.value = ''; form.desc.value = ''; autosize(form.desc); form.title.focus(); }
+  else { closeModal(); openFocusId = i.id; lastFocus = null; }
+  toast(onOther ? t('toast.createdIn', {key:key(i), board:boardOf(i).name}) : t('toast.created', {key:key(i)}), {action:t('btn.view'), fn:view});
+}
+
+/* ----- Logos ----- */
+const logoInput = $('#logoFile'); let logoTarget = null;
+function pickLogo(target){ logoTarget = target; logoInput.value = ''; logoInput.click(); }
+async function readLogo(file){
+  if (!file || !/^image\//.test(file.type)) throw new Error('type');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, bad)=>{ const im = new Image(); im.onload = ()=>ok(im); im.onerror = bad; im.src = url; });
+    const w0 = img.naturalWidth || 256, h0 = img.naturalHeight || 256;
+    for (const max of [256, 192, 128]){
+      const sc = Math.min(1, max / Math.max(w0, h0)), w = Math.max(1, Math.round(w0*sc)), h = Math.max(1, Math.round(h0*sc));
+      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+      cv.getContext('2d').drawImage(img, 0, 0, w, h);
+      let out = cv.toDataURL('image/png');
+      const webp = cv.toDataURL('image/webp', .92);
+      if (webp.startsWith('data:image/webp') && webp.length < out.length) out = webp;
+      if (out.length < 150000) return out;
+    }
+    throw new Error('size');
+  } finally { URL.revokeObjectURL(url); }
+}
+logoInput.addEventListener('change', async ()=>{
+  const f = logoInput.files[0]; if (!f || !logoTarget) return;
+  try {
+    const data = await readLogo(f);
+    if (logoTarget === 'board' && bDraft){ bDraft.logo = data; $('#bsBody',layer).innerHTML = boardSettingsBody(); }
+    else if (logoTarget === 'ws' && isOwner()){ await store.updateWorkspace(wsId, {logo:data}); toast(t('toast.logoSaved')); }
+  } catch(e){ toast(e.message === 'size' ? t('toast.logoBig') : t('toast.logoBad')); }
+});
+
+/* ----- Board settings ----- */
+let bDraft = null;
+function openBoardSettings(boardId){
+  if (!canEdit()) return toast(t('toast.viewOnly'));
+  const b = boardId ? boardById(boardId) : null;
+  bDraft = b ? {isNew:false, id:b.id, name:b.name, key:b.key, color:b.color, logo:b.logo, keyTouched:true, columns:clone(b.columns), removed:{}, err:{}}
+             : {isNew:true, id:'b-'+uid(), name:'', key:'', color:PALETTE[(S.boards.length*3+1)%PALETTE.length][1], logo:null, keyTouched:false, columns:COLS_PPC(), removed:{}, err:{}};
+  const dlg = showModal(`<form data-form="board" novalidate style="display:contents">
+    ${head(bDraft.isNew ? t('bs.createTitle') : t('bs.title'))}
+    <div class="c-body" id="bsBody">${boardSettingsBody()}</div>
+    <div class="m-foot">${!bDraft.isNew ? `<button type="button" class="btn danger-subtle" data-act="del-board" data-id="${bDraft.id}">${I.trash}${esc(t('bs.delete'))}</button>` : ''}<span class="sp"></span>
+      <button type="button" class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button><button type="submit" class="btn primary">${esc(bDraft.isNew ? t('btn.createBoard') : t('btn.saveChanges'))}</button></div>
+  </form>`, 'board', 'narrow');
+  dlg.setAttribute('aria-label', bDraft.isNew ? t('bs.createTitle') : t('bs.title'));
+  if (!coarse()) setTimeout(()=>$('[data-k="bname"]',dlg)?.focus(), 60);
+}
+const colIssueCount = cid=>S.issues.filter(i=>i.boardId===bDraft.id && i.status===cid).length;
+function boardSettingsBody(){
+  const d = bDraft;
+  return `
+    <div class="grid-bs">
+      <label class="fld${d.err.name?' invalid':''}"><span>${esc(t('bs.name'))} <span class="req" aria-hidden="true">*</span></span><input data-k="bname" value="${esc(d.name)}" data-bidi placeholder="${esc(t('bs.namePh'))}" autocomplete="off">${d.err.name?`<em class="err">${esc(d.err.name)}</em>`:''}</label>
+      <label class="fld${d.err.key?' invalid':''}"><span>${esc(t('bs.key'))} <span class="req" aria-hidden="true">*</span></span><input class="key-in" data-k="bkey" value="${esc(d.key)}" maxlength="10" placeholder="ABC" dir="ltr" autocapitalize="characters" autocomplete="off">${d.err.key?`<em class="err">${esc(d.err.key)}</em>`:''}</label>
+    </div>
+    <p class="req-note" id="keyHint" style="margin-top:-8px">${t('bs.keyHint', {ex:`<b class="key">${esc(d.key||'KEY')}-1</b>`})}</p>
+    <div class="logo-row">
+      <div class="fld">${esc(t('bs.logo'))}<div class="logo-edit"><span class="logo-prev">${isImg(d.logo) ? `<img src="${esc(d.logo)}" alt="">` : `<span class="b-av big" style="--bc:${d.color}">${initialOf(d.name||'?')}</span>`}</span>
+        <button type="button" class="btn" data-act="bd-logo">${I.image}${esc(isImg(d.logo) ? t('logo.replace') : t('logo.upload'))}</button>${isImg(d.logo) ? `<button type="button" class="btn subtle" data-act="bd-logo-del">${esc(t('logo.remove'))}</button>` : ''}</div>
+        <span class="ed-hint">${esc(t('logo.hint'))}</span></div>
+    </div>
+    <div class="fld">${esc(t('bs.color'))}${swatches('bd-color', d.color, {label:t('bs.color')})}</div>
+    <div class="ed-sec">
+      <div class="ed-h"><span>${esc(t('bs.columns'))}</span><span class="ed-hint">${esc(t('bs.colHint'))}</span></div>
+      <ol class="ed-list" id="colList">${d.columns.map((c,ix)=>colRowHTML(c,ix)).join('')}</ol>
+      ${d.err.cols?`<em class="ed-err">${esc(d.err.cols)}</em>`:''}
+      <button type="button" class="btn subtle ed-add" data-act="bd-addcol">${I.plus}${esc(t('bs.addCol'))}</button>
+    </div>`;
+}
+function colRowHTML(c, ix){
+  const d = bDraft, n = d.isNew ? 0 : colIssueCount(c.id);
+  if (c._confirm){
+    const others = d.columns.filter(x=>x.id!==c.id);
+    return `<li class="ed-row confirm" data-cid="${c.id}"><p>${esc(t('bs.removeColQ', {name:c.name||'—', n:tn('issues', n)}))}</p>
+      <label>${esc(t('bs.moveTo'))}<select class="inp" data-k="cmove-${c.id}">${others.map(o=>`<option value="${o.id}"${o.id===c._target?' selected':''}>${esc(o.name||'—')}</option>`).join('')}</select></label>
+      <button type="button" class="btn danger sm" data-act="bd-delcol-yes" data-k="cyes-${c.id}">${esc(t('bs.removeCol'))}</button><button type="button" class="btn subtle sm" data-act="bd-delcol-no">${esc(t('btn.keep'))}</button></li>`;
+  }
+  const last = d.columns.length - 1;
+  return `<li class="ed-row" data-cid="${c.id}">
+    <span class="ed-pos">${ix+1}</span>
+    <input class="inp ce-name" data-k="cname-${c.id}" value="${esc(c.name)}" data-bidi placeholder="${esc(t('bs.colName'))}" aria-label="${esc(t('bs.colName'))}" autocomplete="off">
+    <select class="inp" data-k="ccat-${c.id}" aria-label="${esc(t('bs.category'))}">${CATS.map(k=>`<option value="${k}"${k===c.cat?' selected':''}>${esc(catName(k))}</option>`).join('')}</select>
+    <span class="loz ${c.cat}" data-loz>${esc(catName(c.cat))}</span>
+    <button type="button" class="btn icon subtle sm" data-act="bd-colup" data-k="cup-${c.id}" aria-label="${esc(t('bs.earlier'))}" title="${esc(t('bs.earlier'))}"${ix===0?' disabled':''}>${I.aup}</button>
+    <button type="button" class="btn icon subtle sm" data-act="bd-coldown" data-k="cdn-${c.id}" aria-label="${esc(t('bs.later'))}" title="${esc(t('bs.later'))}"${ix===last?' disabled':''}>${I.adown}</button>
+    <button type="button" class="btn icon subtle sm" data-act="bd-delcol" data-k="cdel-${c.id}" aria-label="${esc(t('bs.removeCol'))}" title="${esc(d.columns.length===1?t('bs.oneCol'):t('bs.removeCol'))}"${d.columns.length===1?' disabled':''}>${I.trash}</button>
+  </li>`;
+}
+function rerenderCols(animate){
+  const list = $('#colList',layer); if (!list) return;
+  const rows = $$('.ed-row',list);
+  const doIt = ()=>rerender(list, bDraft.columns.map((c,ix)=>colRowHTML(c,ix)).join(''));
+  if (animate){
+    const r0 = new Map(rows.map(r=>[r.dataset.cid, r.getBoundingClientRect().top]));
+    doIt();
+    if (!reduce) $$('.ed-row',list).forEach(r=>{ const a = r0.get(r.dataset.cid); if (a === undefined) return; const dy = a - r.getBoundingClientRect().top;
+      if (Math.abs(dy) > .5) r.animate([{transform:`translateY(${dy}px)`},{transform:'none'}],{duration:200, easing:'cubic-bezier(.2,.8,.2,1)'}); });
+  } else doIt();
+}
+function saveBoard(){
+  const d = bDraft; d.err = {};
+  d.name = d.name.trim(); d.key = d.key.trim().toUpperCase();
+  if (!d.name) d.err.name = t('bs.errName');
+  if (!/^[A-Z][A-Z0-9]{0,9}$/.test(d.key)) d.err.key = t('bs.errKey');
+  else if (S.boards.some(b=>b.id!==d.id && b.key===d.key)) d.err.key = t('bs.errKeyUsed');
+  if (d.columns.some(c=>c._confirm)) d.err.cols = t('bs.errFinish');
+  d.columns.forEach(c=>{ c.name = c.name.trim(); });
+  if (d.columns.some(c=>!c.name)) d.err.cols = t('bs.errColName');
+  if (Object.keys(d.err).length){
+    $('#bsBody',layer).innerHTML = boardSettingsBody();
+    $('.invalid input, .ed-row .inp:placeholder-shown',layer)?.focus();
+    return;
+  }
+  const cols = d.columns.map(({id,name,cat})=>({id,name,cat}));
+  if (d.isNew){
+    S.boards.push({id:d.id, name:d.name, key:d.key, color:d.color, logo:d.logo||null, seq:0, order:undefined, columns:cols});
+    P.active[wsId] = d.id; P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = d.id; savePrefs();
+    composer = null; save(); closeModal(); render();
+    toast(t('toast.boardCreated', {name:d.name}));
+    return;
+  }
+  const b = boardById(d.id), oldName = b.name;
+  const exists = new Set(cols.map(c=>c.id));
+  const resolve = id=>{ let x = id, guard = 0; while (!exists.has(x) && guard++ < 50) x = d.removed[x]; return exists.has(x) ? x : cols[0].id; };
+  const names = Object.fromEntries([...b.columns, ...cols].map(c=>[c.id,c.name]));
+  let moved = 0;
+  S.issues.filter(i=>i.boardId===b.id && !exists.has(i.status)).forEach(i=>{
+    const to = resolve(i.status); touch(i, t('h.colRemoved', {from:names[i.status]||'—', to:names[to]})); i.status = to; moved++;
+  });
+  if (oldName !== d.name) S.issues.forEach(i=>{ if (i.boardId === b.id) i.labels = i.labels.map(l=>sameText(l, oldName) ? normLabel(d.name) : l); });
+  Object.assign(b, {name:d.name, key:d.key, color:d.color, logo:d.logo||null, columns:cols});
+  S.issues.forEach(i=>{ if (i.boardId !== b.id) return; const done = isDone(i); if (done && !i.doneAt) i.doneAt = Date.now(); if (!done) i.doneAt = null; });
+  save(); closeModal(); render();
+  toast(moved ? t('toast.boardSavedMoved', {n:tn('issues', moved)}) : t('toast.boardSaved'));
+}
+function deleteBoard(id){
+  const b = boardById(id); if (!b) return;
+  const n = S.issues.filter(i=>i.boardId===id).length;
+  openConfirm({title:t('bs.deleteQ'), ok:t('bs.delete'),
+    text:esc(n ? t('bs.deleteTextN', {name:b.name, n:tn('issues', n)}) : t('bs.deleteText', {name:b.name})),
+    fn:()=>{
+      const bix = S.boards.indexOf(b), removed = S.issues.filter(i=>i.boardId===id), wasActive = activeKey() === id;
+      S.boards.splice(bix,1); S.issues = S.issues.filter(i=>i.boardId!==id);
+      if (wasActive) P.active[wsId] = S.boards[Math.max(0,bix-1)]?.id || ALL;
+      savePrefs(); save(); closeModal(); render();
+      toast(t('toast.boardDeleted', {name:b.name}), {action:t('btn.undo'), fn:()=>{ S.boards.splice(bix,0,b); S.issues.push(...removed); removed.forEach(i=>{ i.rank = undefined; }); if (wasActive) P.active[wsId] = b.id; save(); render(); }});
+    }});
+}
+
+/* ----- Issue types ----- */
+let tDraft = null;
+function openTypes(){
+  if (!canEdit()) return toast(t('toast.viewOnly'));
+  tDraft = {types:clone(S.types), removed:{}, err:''};
+  const dlg = showModal(`<form data-form="types" novalidate style="display:contents">
+    ${head(t('types.title'))}
+    <div class="c-body"><p class="req-note">${esc(t('types.hint'))}</p><div class="ed-sec" id="tyBody">${typesBody()}</div></div>
+    <div class="m-foot"><span class="sp"></span><button type="button" class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button><button type="submit" class="btn primary">${esc(t('btn.saveChanges'))}</button></div>
+  </form>`, 'types', 'narrow');
+  dlg.setAttribute('aria-label', t('types.title'));
+}
+const typeCount = id=>S.issues.filter(i=>i.type===id).length;
+function typesBody(){
+  const d = tDraft;
+  return `<ol class="ed-list" id="tyList">${d.types.map(ty=>{
+    if (ty._confirm){
+      const n = typeCount(ty.id), others = d.types.filter(x=>x.id!==ty.id);
+      return `<li class="ed-row confirm" data-tid="${ty.id}"><p>${esc(t('types.removeQ', {name:ty.name||'—', n:tn('issues', n)}))}</p>
+        <label>${esc(t('types.changeTo'))}<select class="inp" data-k="tmove-${ty.id}">${others.map(o=>`<option value="${o.id}"${o.id===ty._target?' selected':''}>${esc(o.name||'—')}</option>`).join('')}</select></label>
+        <button type="button" class="btn danger sm" data-act="ty-del-yes" data-k="tyes-${ty.id}">${esc(t('types.remove'))}</button><button type="button" class="btn subtle sm" data-act="ty-del-no">${esc(t('btn.keep'))}</button></li>`;
+    }
+    const n = typeCount(ty.id);
+    return `<li class="ed-row${ty._new?' in':''}" data-tid="${ty.id}">
+      <button type="button" class="ty-ico" data-act="ty-style" data-k="tsty-${ty.id}" aria-label="${esc(t('types.style'))}" aria-haspopup="menu" title="${esc(t('types.style'))}">${typeSVG(ty)}</button>
+      <input class="inp" data-k="tname-${ty.id}" value="${esc(ty.name)}" data-bidi placeholder="${esc(t('types.namePh'))}" aria-label="${esc(t('types.namePh'))}" autocomplete="off">
+      <span class="ty-count">${esc(n ? tn('issues', n) : t('types.unused'))}</span>
+      <button type="button" class="btn icon subtle sm" data-act="ty-del" data-k="tdel-${ty.id}" aria-label="${esc(t('types.remove'))}" title="${esc(d.types.length===1?t('types.oneType'):t('types.remove'))}"${d.types.length===1?' disabled':''}>${I.trash}</button></li>`;
+  }).join('')}</ol>${d.err?`<em class="ed-err">${esc(d.err)}</em>`:''}
+  <button type="button" class="btn subtle ed-add" data-act="ty-add">${I.plus}${esc(t('types.add'))}</button><button type="button" class="btn subtle ed-add" data-act="ty-preset">${I.board}${esc(t('types.preset'))}</button>`;
+}
+function typeStylePop(ty){
+  return `<div class="menu-h">${esc(t('f.color'))}</div>${swatches('ty-color', ty.color, {sm:true})}
+    <div class="menu-h">${esc(t('types.symbol'))}</div><div class="glyph-grid">${Object.keys(GLYPHS).map(g=>`<button type="button" class="glyph-btn${ty.glyph===g?' on':''}" data-act="ty-glyph" data-g="${g}" aria-label="${g}" aria-pressed="${ty.glyph===g}">${typeSVG({...ty, glyph:g, name:g})}</button>`).join('')}</div>`;
+}
+function saveTypes(){
+  const d = tDraft; d.err = '';
+  d.types.forEach(x=>{ x.name = x.name.trim(); });
+  if (d.types.some(x=>x._confirm)) d.err = t('types.errFinish');
+  else if (d.types.some(x=>!x.name)) d.err = t('types.errName');
+  if (d.err){ $('#tyBody',layer).innerHTML = typesBody(); return; }
+  const types = d.types.map(({id,name,color,glyph})=>({id,name,color,glyph}));
+  const exists = new Set(types.map(x=>x.id));
+  const resolve = id=>{ let x = id, g = 0; while (!exists.has(x) && g++ < 50) x = d.removed[x]; return exists.has(x) ? x : types[0].id; };
+  const names = Object.fromEntries([...S.types, ...types].map(x=>[x.id,x.name]));
+  S.issues.filter(i=>!exists.has(i.type)).forEach(i=>{ const to = resolve(i.type); touch(i, t('h.typeRemoved', {from:names[i.type], to:names[to]})); i.type = to; });
+  S.types = types;
+  save(); closeModal(); render(); toast(t('toast.typesSaved'));
+}
+
+/* ----- Workspace settings: name, logo, people, requests ----- */
+function openWsSettings(){
+  if (!isOwner()) return toast(t('toast.ownerOnly'));
+  const dlg = showModal(`${head(t('ws.settings'))}<div class="c-body" id="wsBody"></div>
+    <div class="m-foot"><span class="sp"></span><button type="button" class="btn primary" data-act="close-modal">${esc(t('btn.done'))}</button></div>`, 'wsSettings', 'narrow');
+  dlg.setAttribute('aria-label', t('ws.settings'));
+  renderWsSettingsBody();
+}
+function renderWsSettingsBody(){
+  const body = $('#wsBody', layer); if (!body || !ws) return;
+  const roles = ws.roles || {}, members = Object.keys(roles).sort();
+  const pend = incoming.filter(r=>r.status==='pending');
+  const siteUrl = location.origin + location.pathname;
+  rerender(body, `
+    ${pend.length ? `<section class="ws-sec req-sec"><h3>${I.bell}${esc(t('req.title'))} <span class="pill">${pend.length}</span></h3>
+      <ul class="people">${pend.map(r=>`<li>${avatar({name:r.fromName, email:r.fromEmail, photo:r.fromPhoto})}<div class="p-txt"><b data-bidi>${esc(r.fromName||r.fromEmail)}</b><span dir="ltr">${esc(r.fromEmail)}</span><small>${esc(ago(r.created||Date.now()))}</small></div>
+        <div class="p-acts"><button class="btn primary sm" data-act="req-approve" data-id="${esc(r.id)}" data-role="editor">${esc(t('req.approveEdit'))}</button><button class="btn sm" data-act="req-approve" data-id="${esc(r.id)}" data-role="viewer">${esc(t('req.approveView'))}</button><button class="btn subtle sm" data-act="req-decline" data-id="${esc(r.id)}">${esc(t('req.decline'))}</button></div></li>`).join('')}</ul></section>` : ''}
+    <section class="ws-sec">
+      <label class="fld">${esc(t('ws.name'))}<input class="inp" data-k="wsname" maxlength="100" value="${esc(ws.name)}" data-bidi autocomplete="off"></label>
+      <div class="fld">${esc(t('ws.logo'))}<div class="logo-edit"><span class="logo-prev wide">${isImg(ws.logo) ? `<img src="${esc(ws.logo)}" alt="">` : `<span class="logo big">${APP_MARK}</span>`}</span>
+        <button type="button" class="btn" data-act="ws-logo">${I.image}${esc(isImg(ws.logo) ? t('logo.replace') : t('logo.upload'))}</button>${isImg(ws.logo) ? `<button type="button" class="btn subtle" data-act="ws-logo-del">${esc(t('logo.remove'))}</button>` : ''}</div>
+        <span class="ed-hint">${esc(t('ws.logoHint'))}</span></div>
+    </section>
+    <section class="ws-sec">
+      <h3>${I.users}${esc(t('share.title'))}</h3>
+      <p class="req-note">${esc(t('share.hint'))}</p>
+      <form class="share-form" data-form="share" novalidate>
+        <input class="inp" name="email" type="email" inputmode="email" dir="ltr" placeholder="name@example.com" aria-label="${esc(t('share.email'))}" autocomplete="off">
+        <select class="inp" name="role" aria-label="${esc(t('share.role'))}"><option value="editor">${esc(t('role.editor'))}</option><option value="viewer">${esc(t('role.viewer'))}</option></select>
+        <button class="btn primary">${esc(t('share.add'))}</button>
+      </form>
+      <em class="ed-err" id="shareErr" hidden></em>
+      <ul class="people">
+        <li>${avatar({name:ws.ownerName, email:ws.ownerEmail, photo:ws.ownerUid===user.uid?user.photo:''})}<div class="p-txt"><b data-bidi>${esc(ws.ownerName||ws.ownerEmail)}</b><span dir="ltr">${esc(ws.ownerEmail)}</span></div><span class="role-tag">${esc(t('role.owner'))}</span></li>
+        ${members.map(m=>`<li>${avatar({email:m, name:m})}<div class="p-txt"><span dir="ltr" class="p-mail">${esc(m)}</span></div>
+          <select class="inp role-sel" data-k="role-${esc(m)}" data-email="${esc(m)}" aria-label="${esc(t('share.role'))}"><option value="editor"${roles[m]==='editor'?' selected':''}>${esc(t('role.editor'))}</option><option value="viewer"${roles[m]==='viewer'?' selected':''}>${esc(t('role.viewer'))}</option></select>
+          <a class="btn icon subtle sm" href="mailto:${esc(m)}?subject=${encodeURIComponent(t('mail.subject', {ws:ws.name}))}&body=${encodeURIComponent(t('mail.body', {ws:ws.name, url:siteUrl, email:m}))}" aria-label="${esc(t('share.mail'))}" title="${esc(t('share.mail'))}">${I.mail}</a>
+          <button class="btn icon subtle sm" data-act="member-remove" data-email="${esc(m)}" aria-label="${esc(t('share.remove'))}" title="${esc(t('share.remove'))}">${I.x}</button></li>`).join('')}
+      </ul>
+      ${!members.length ? `<p class="muted-p">${esc(t('share.none'))}</p>` : ''}
+      <div class="copy-link"><span dir="ltr">${esc(siteUrl)}</span><button class="btn sm" data-act="copy-site">${I.copy}${esc(t('share.copyLink'))}</button></div>
+    </section>`);
+}
+async function setMember(email, role){
+  try { await store.setMember(wsId, email, role); return true; }
+  catch(e){ console.error(e); toast(t('toast.saveFailed')); return false; }
+}
+let wsNameTimer = 0;
+
+/* ----- Request access ----- */
+function openRequestAccess(){
+  const mine = outgoing.slice().sort((a,b)=>(b.created||0)-(a.created||0));
+  const dlg = showModal(`${head(t('ra.title'))}<div class="c-body">
+      <p class="req-note">${esc(t('ra.hint'))}</p>
+      <form class="cr-form" data-form="request" novalidate><input class="inp" name="email" type="email" inputmode="email" dir="ltr" placeholder="name@example.com" aria-label="${esc(t('welcome.askEmail'))}" autocomplete="off"><button class="btn primary">${esc(t('btn.sendRequest'))}</button></form>
+      <em class="ed-err" id="reqErr" hidden></em>
+      ${mine.length ? `<ul class="people">${mine.map(r=>`<li>${I.mail}<div class="p-txt"><span dir="ltr" class="p-mail">${esc(r.toEmail)}</span><small>${esc(ago(r.created||Date.now()))}</small></div><span class="role-tag ${esc(r.status)}">${esc(t('ra.status.'+r.status))}</span><button class="btn icon subtle sm" data-act="req-cancel" data-id="${esc(r.id)}" aria-label="${esc(t('btn.cancelRequest'))}" title="${esc(t('btn.cancelRequest'))}">${I.x}</button></li>`).join('')}</ul>` : ''}
+    </div>`, 'request', 'narrow');
+  dlg.setAttribute('aria-label', t('ra.title'));
+}
+async function sendRequest(form){
+  const email = lower(new FormData(form).get('email')), err = $('#reqErr', form.parentElement);
+  const fail = msg=>{ err.textContent = msg; err.hidden = false; form.email.focus(); };
+  if (!isEmail(email)) return fail(t('ra.errEmail'));
+  if (email === user.email) return fail(t('ra.errSelf'));
+  if (outgoing.some(r=>r.toEmail===email && r.status==='pending')) return fail(t('ra.errDup'));
+  try {
+    await store.createRequest({fromUid:user.uid, fromEmail:user.email, fromName:String(user.name||'').slice(0,200), fromPhoto:String(user.photo||'').slice(0,500), toEmail:email, status:'pending', created:Date.now()});
+    form.email.value = ''; err.hidden = true;
+    toast(t('toast.requestSent', {email}));
+    if (modalKind === 'request') openRequestAccess();
+  } catch(e){ console.error(e); fail(t('toast.saveFailed')); }
+}
+
+/* ----- Shortcuts ----- */
+function openShortcuts(){
+  const k = [['C','sc.create'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
+  showModal(`${head(t('sc.title'))}<dl class="kbd-list">${k.map(([a,b])=>`<dt dir="ltr">${a.split(' ').map(x=>x==='+'?' + ':`<kbd>${x}</kbd>`).join('')}</dt><dd>${esc(t(b))}</dd>`).join('')}</dl>`, 'help', 'tiny');
+}
+
+/* ----- Modal events ----- */
+let focusVal = {};
+layer.addEventListener('focusin', e=>{ const f = e.target.dataset?.f; if (f === 'title' || f === 'desc') focusVal[f] = e.target.value; });
+layer.addEventListener('input', e=>{
+  const el = e.target, k = el.dataset?.k || '';
+  if (el.tagName === 'TEXTAREA') autosize(el);
+  if (modalKind === 'create'){ if (el.name === 'title'){ const f = $('#sumFld',layer); f.classList.remove('invalid'); $('.err',f).hidden = true; } return; }
+  if (modalKind === 'board'){
+    if (k === 'bname'){ bDraft.name = el.value; if (!bDraft.keyTouched){ bDraft.key = keyFromName(el.value); $('[data-k="bkey"]',layer).value = bDraft.key; } }
+    else if (k === 'bkey'){ bDraft.keyTouched = true; bDraft.key = el.value.toUpperCase().replace(/[^A-Z0-9]/g,''); }
+    else if (k.startsWith('cname-')){ const c = bDraft.columns.find(c=>c.id===k.slice(6)); if (c) c.name = el.value; }
+    if (k === 'bname' || k === 'bkey'){ const hint = $('#keyHint b',layer); if (hint) hint.textContent = `${bDraft.key||'KEY'}-1`; }
+    return;
+  }
+  if (modalKind === 'types'){
+    if (k.startsWith('tname-')){ const ty = tDraft.types.find(x=>x.id===k.slice(6)); if (ty){ ty.name = el.value; el.parentElement.querySelector('.ty-ico').innerHTML = typeSVG(ty); } }
+    return;
+  }
+  if (modalKind === 'wsSettings'){
+    if (k === 'wsname'){ clearTimeout(wsNameTimer); const v = el.value.trim().slice(0,100); wsNameTimer = setTimeout(()=>{ if (v && v !== ws.name) store.updateWorkspace(wsId, {name:v}).catch(()=>toast(t('toast.saveFailed'))); }, 600); }
+    if (el.name === 'email') $('#shareErr',layer).hidden = true;
+    return;
+  }
+  if (modalKind === 'request'){ $('#reqErr',layer).hidden = true; return; }
+  if (!canEdit()) return;
+  const i = get(openId); if (!i) return;
+  if (el.dataset.f === 'title' || el.dataset.f === 'desc'){ i[el.dataset.f] = el.value; i.updated = Date.now(); save(); scheduleRender(); }
+  else if (el.classList.contains('st-text')){ const s = i.subtasks.find(s=>s.id===el.closest('li').dataset.sid); if (s){ s.text = el.value; save(); scheduleRender(); } }
+  else if (k === 'cmt') cmtDraft = el.value;
+  else if (k === 'l-url') $('#linkErr',layer).hidden = true;
+});
+layer.addEventListener('change', e=>{
+  const el = e.target, k = el.dataset?.k || '';
+  if (modalKind === 'create'){
+    if (el.name === 'type') el.previousElementSibling.outerHTML = typeIcon(el.value);
+    if (el.name === 'priority') el.previousElementSibling.outerHTML = prioIcon(el.value);
+    if (el.name === 'board'){
+      const b = boardById(el.value), st = el.form.status, prevCol = st.selectedOptions[0]?.textContent || '';
+      st.innerHTML = b.columns.map(c=>`<option value="${c.id}"${c.name===prevCol?' selected':''}>${esc(c.name)}</option>`).join('');
+      const lab = el.form.labels; if (sameText(lab.value, el.dataset.prev) || !lab.value.trim()) lab.value = normLabel(b.name);
+      el.dataset.prev = b.name;
+    }
+    return;
+  }
+  if (modalKind === 'board'){
+    if (k.startsWith('ccat-')){ const c = bDraft.columns.find(c=>c.id===k.slice(5)); c.cat = el.value; const l = el.parentElement.querySelector('[data-loz]'); l.className = `loz ${c.cat}`; l.textContent = catName(c.cat); }
+    if (k.startsWith('cmove-')){ const c = bDraft.columns.find(c=>c.id===k.slice(6)); c._target = el.value; }
+    return;
+  }
+  if (modalKind === 'types'){ if (k.startsWith('tmove-')){ const ty = tDraft.types.find(x=>x.id===k.slice(6)); ty._target = el.value; } return; }
+  if (modalKind === 'wsSettings'){
+    if (el.classList.contains('role-sel')){ const em = el.dataset.email, r = el.value; setMember(em, r).then(ok=>{ if (ok) toast(t('toast.roleChanged', {email:em, role:t('role.'+r)})); }); }
+    return;
+  }
+  if (!canEdit()) return;
+  const i = get(openId); if (!i) return;
+  const f = el.dataset.f;
+  if (f === 'title' || f === 'desc'){
+    if (focusVal[f] !== undefined && focusVal[f] !== el.value){ touch(i, f === 'title' ? t('h.summary') : t('h.desc')); save(); }
+    focusVal[f] = el.value; return;
+  }
+  if (f === 'type'){ i.type = el.value; touch(i, t('h.type', {name:typeOf(i.type).name})); }
+  else if (f === 'priority'){ i.priority = el.value; touch(i, t('h.priority', {name:prioName(i.priority)})); }
+  else if (f === 'due'){ i.due = el.value; touch(i, i.due ? t('h.due', {date:fmtDay(i.due)}) : t('h.dueNone')); }
+  else if (f === 'start'){ i.start = isISO(el.value) ? el.value : today(); touch(i, t('h.start', {date:fmtDay(i.start)})); }
+  else if (f === 'points'){ const v = el.value.trim(); i.points = v === '' || isNaN(Number(v)) ? null : Number(v); touch(i, i.points == null ? t('h.pointsNone') : t('h.points', {n:i.points})); }
+  else if (f === 'board'){ moveToBoard(i, el.value); return; }
+  else return;
+  save(); render(); refreshIssue();
+});
+function addLabel(input){
+  const i = get(openId), l = normLabel(input.value);
+  input.value = '';
+  if (!l || i.labels.some(x=>sameText(x,l))) return;
+  i.labels.push(l); touch(i, t('h.companyAdd', {name:l})); save(); render(); refreshIssue();
+  $('.lbl-in',layer)?.focus();
+}
+layer.addEventListener('keydown', e=>{
+  const el = e.target;
+  if (['create','board','types'].includes(modalKind)){
+    if (e.key === 'Enter' && (e.ctrlKey||e.metaKey)){ e.preventDefault(); $('form',layer)?.requestSubmit(); }
+    else if (e.key === 'Enter' && el.tagName === 'INPUT' && (modalKind === 'board' || modalKind === 'types') && (el.dataset.k||'').match(/^(cname|tname)-/)){ e.preventDefault(); }
+    return;
+  }
+  if (modalKind !== 'issue' || !canEdit()) return;
+  if (el.classList.contains('sum') && e.key === 'Enter' && !e.isComposing){ e.preventDefault(); el.blur(); }
+  if (el.classList.contains('st-text') && e.key === 'Enter' && !e.isComposing){ e.preventDefault(); el.blur(); }
+  if (el.classList.contains('lbl-in')){
+    if ((e.key === 'Enter' || e.key === ',') && !e.isComposing){ e.preventDefault(); addLabel(el); }
+    else if (e.key === 'Backspace' && !el.value){ const i = get(openId); const l = i.labels.pop(); if (l){ touch(i, t('h.companyRemove', {name:l})); save(); render(); refreshIssue(); } }
+  }
+  if (el.dataset.k === 'cmt' && e.key === 'Enter' && (e.ctrlKey||e.metaKey)){ e.preventDefault(); saveComment(); }
+  if (el.dataset.k === 'cmt-edit'){
+    if (e.key === 'Enter' && (e.ctrlKey||e.metaKey)){ e.preventDefault(); updateComment(el); }
+    if (e.key === 'Escape'){ e.stopPropagation(); editingCid = null; refreshIssue(); }
+  }
+});
+layer.addEventListener('focusout', e=>{ if (e.target.classList?.contains('lbl-in') && e.target.value.trim() && !e.relatedTarget?.closest?.('.labels-edit')) addLabel(e.target); });
+layer.addEventListener('submit', e=>{
+  e.preventDefault();
+  const form = e.target;
+  if (form.dataset.form === 'request') return sendRequest(form);
+  if (form.dataset.form === 'share') return shareSubmit(form);
+  if (!canEdit()) return;
+  if (form.dataset.form === 'create') return submitCreate(form);
+  if (form.dataset.form === 'board') return saveBoard();
+  if (form.dataset.form === 'types') return saveTypes();
+  const i = get(openId); if (!i) return;
+  if (form.dataset.form === 'link'){
+    const ui = $('[data-k="l-url"]',form), ti = $('[data-k="l-title"]',form), url = normUrl(ui.value);
+    if (!url){ $('#linkErr',layer).hidden = false; ui.focus(); return; }
+    const l = {id:uid(), url, title:ti.value.trim()};
+    i.links.push(l); touch(i, t('h.linkAdd', {name:l.title || hostOf(url)})); save(); render();
+    $('.links',layer).outerHTML = linksHTML(i, true);
+    $(`.links li[data-lid="${l.id}"]`,layer)?.classList.add('in');
+    const sh = $('.links',layer).previousElementSibling; sh.innerHTML = `<h3>${esc(t('f.links'))}</h3><span class="sec-meta">${i.links.length}</span>`;
+    ui.value = ''; ti.value = ''; ui.focus();
+    return;
+  }
+  if (form.dataset.form === 'subtask'){
+    const inp = $('input',form), v = inp.value.trim(); if (!v) return;
+    const s = {id:uid(), text:v, done:false};
+    i.subtasks.push(s); touch(i, t('h.stAdd', {name:v})); save(); render();
+    if (i.subtasks.length > 1){
+      $('.sts',layer).insertAdjacentHTML('beforeend', stHTML(s, true, 'in'));
+      $('#stMeta',layer).textContent = t('st.pct', {n:pctOf(i)}); setBar(pctOf(i));
+    } else refreshIssue();
+    inp.value = ''; $('[data-k="st-add"]',layer).focus();
+  }
+});
+async function shareSubmit(form){
+  const f = new FormData(form), email = lower(f.get('email')), r = f.get('role') === 'viewer' ? 'viewer' : 'editor', err = $('#shareErr',layer);
+  const fail = m=>{ err.textContent = m; err.hidden = false; form.email.focus(); };
+  if (!isEmail(email)) return fail(t('ra.errEmail'));
+  if (email === lower(ws.ownerEmail)) return fail(t('share.errOwner'));
+  const had = email in (ws.roles||{});
+  if (!await setMember(email, r)) return;
+  const pendingFrom = incoming.find(x=>x.status==='pending' && lower(x.fromEmail)===email);
+  if (pendingFrom) store.updateRequest(pendingFrom.id, {status:'approved', role:r, wsId, wsName:ws.name, decidedAt:Date.now()}).catch(()=>{});
+  form.email.value = '';
+  toast(had ? t('toast.roleChanged', {email, role:t('role.'+r)}) : t('toast.shared', {email}), had ? {} : {action:t('share.mail'), fn:()=>{ location.href = `mailto:${email}?subject=${encodeURIComponent(t('mail.subject', {ws:ws.name}))}&body=${encodeURIComponent(t('mail.body', {ws:ws.name, url:location.origin+location.pathname, email}))}`; }});
+}
+function saveComment(){
+  const i = get(openId), ta = $('[data-k="cmt"]',layer), v = ta.value.trim();
+  if (!v){ ta.focus(); return; }
+  const c = {id:uid(), text:v, at:Date.now(), by:me()};
+  i.comments.unshift(c); touch(i); cmtDraft = ''; fx.cmt = c.id; save(); render(); refreshIssue();
+  $('[data-k="cmt"]',layer)?.blur();
+}
+function updateComment(ta){
+  const i = get(openId), c = i.comments.find(c=>c.id===editingCid), v = ta.value.trim();
+  if (c && v){ c.text = v; c.edited = true; touch(i); save(); render(); }
+  editingCid = null; refreshIssue();
+}
+
+/* ================= Global click actions ================= */
+const EDIT_ACTS = new Set(['new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
+document.addEventListener('click', async e=>{
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const act = b.dataset.act;
+  if (EDIT_ACTS.has(act) && screen === 'app' && !canEdit()){ toast(t('toast.viewOnly')); return; }
+  const inPop = !!b.closest('#pop');
+  const ctxId = inPop ? pop.dataset.id : (b.dataset.id || openId);
+  const i = ctxId && get(ctxId);
+  switch(act){
+    /* account & workspaces */
+    case 'signin': try { await store.signIn(); } catch(err){ console.error(err); toast(t('toast.signinFailed')); } break;
+    case 'signout': closePop(); flush(); await store.signOut(); break;
+    case 'retry': if (wsId) openWorkspace(wsId); else location.reload(); break;
+    case 'lang': closePop(); setLang(getLang() === 'he' ? 'en' : 'he'); relocalize(); break;
+    case 'theme': closePop(); setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark', true); if (screen !== 'app') rerenderGate(); break;
+    case 'ws-menu': openPop(b, wsMenu(), ''); break;
+    case 'me-menu': openPop(b, meMenu(), ''); break;
+    case 'switch-ws': closePop(); if (b.dataset.id !== wsId) openWorkspace(b.dataset.id); break;
+    case 'welcome': closePop(); closeModal(true); renderWelcome(); break;
+    case 'welcome-back': if (wsId){ showApp(); scheduleRender(); } else if (wsList?.length) openWorkspace(wsList[0].id); break;
+    case 'ws-create': createWorkspace(b.dataset.kind); break;
+    case 'ws-settings': closePop(); shell.classList.remove('side-open'); openWsSettings(); break;
+    case 'request-access': closePop(); shell.classList.remove('side-open'); openRequestAccess(); break;
+    case 'bell': if (isOwner()) openWsSettings(); else if (!(wsList||[]).some(w=>w.ownerUid===user.uid)) toast(t('req.needOwn')); else { const own = wsList.find(w=>w.ownerUid===user.uid); openWorkspace(own.id); setTimeout(()=>{ if (isOwner()) openWsSettings(); }, 400); } break;
+    case 'req-cancel': store.deleteRequest(b.dataset.id).then(()=>{ if (modalKind === 'request') openRequestAccess(); }).catch(()=>toast(t('toast.saveFailed'))); break;
+    case 'req-approve': {
+      const r = incoming.find(x=>x.id===b.dataset.id); if (!r || !isOwner()) break;
+      const email = lower(r.fromEmail), role = b.dataset.role === 'viewer' ? 'viewer' : 'editor';
+      if (!await setMember(email, role)) break;
+      store.updateRequest(r.id, {status:'approved', role, wsId, wsName:ws.name, decidedAt:Date.now()}).catch(()=>{});
+      toast(t('toast.approved', {email, role:t('role.'+role)}));
+      break; }
+    case 'req-decline': store.updateRequest(b.dataset.id, {status:'declined', decidedAt:Date.now()}).catch(()=>toast(t('toast.saveFailed'))); break;
+    case 'member-remove': {
+      const email = b.dataset.email;
+      if (await setMember(email, null)) toast(t('toast.removed', {email})); break; }
+    case 'copy-site': copyText(location.origin + location.pathname).then(ok=>toast(ok ? t('toast.linkCopied') : location.origin + location.pathname)); break;
+    case 'ws-logo': pickLogo('ws'); break;
+    case 'ws-logo-del': store.updateWorkspace(wsId, {logo:null}).catch(()=>toast(t('toast.saveFailed'))); break;
+
+    /* layout */
+    case 'toggle-side':
+      if (sideOverlay()) shell.classList.toggle('side-open');
+      else { P.side = !P.side; shell.classList.toggle('side-closed', !P.side); savePrefs(); }
+      break;
+    case 'view': e.preventDefault(); P.view = b.dataset.view; savePrefs(); render(); shell.classList.remove('side-open'); break;
+    case 'switch-board': switchBoard(b.dataset.id); break;
+    case 'board-menu': {
+      e.stopPropagation();
+      const bid = b.dataset.id;
+      openPop(b, `<button class="menu-i" role="menuitem" data-act="board-settings" data-id="${bid}">${I.gear}${esc(t('bs.title'))}</button>
+        <button class="menu-i danger" role="menuitem" data-act="del-board" data-id="${bid}">${I.trash}${esc(t('bs.delete'))}</button>`, bid);
+      break; }
+    case 'new-board': closePop(); shell.classList.remove('side-open'); openBoardSettings(null); break;
+    case 'board-settings': {
+      closePop(); shell.classList.remove('side-open');
+      const bid = inPop ? pop.dataset.id : (b.dataset.id || (isAll() ? null : curBoard()?.id));
+      if (bid) openBoardSettings(bid); else toast(t('toast.pickBoard'));
+      break; }
+    case 'del-board': closePop(); shell.classList.remove('side-open'); deleteBoard(inPop ? pop.dataset.id : b.dataset.id); break;
+    case 'confirm-ok': { const fn = confirmFn; confirmFn = null; fn?.(); break; }
+    case 'types': closePop(); shell.classList.remove('side-open'); openTypes(); break;
+    case 'create': openCreate(); break;
+    case 'shortcuts': openShortcuts(); break;
+    case 'export': exportData(); shell.classList.remove('side-open'); break;
+    case 'import': $('#importFile').click(); shell.classList.remove('side-open'); break;
+
+    /* filters */
+    case 'qf': qf.has(b.dataset.qf) ? qf.delete(b.dataset.qf) : qf.add(b.dataset.qf); render(); break;
+    case 'type-filter-menu':
+      openPop(b, `<div class="menu-h">${esc(t('filter.showType'))}</div><button class="menu-i" role="menuitem" data-act="type-filter" data-t="">${esc(t('filter.allTypes'))}${chk(!typeFilter)}</button>
+        ${S.types.map(x=>`<button class="menu-i" role="menuitem" data-act="type-filter" data-t="${x.id}">${typeSVG(x)}<span data-bidi>${esc(x.name)}</span>${chk(typeFilter===x.id)}</button>`).join('')}`, '');
+      break;
+    case 'type-filter': typeFilter = b.dataset.t || null; closePop(); render(); break;
+    case 'plat-filter-menu':
+      openPop(b, `<div class="menu-h">${esc(t('filter.showPlatform'))}</div><button class="menu-i" role="menuitem" data-act="plat-filter" data-p="">${esc(t('filter.allPlatforms'))}${chk(!platFilter)}</button>
+        ${PLATFORMS.map(([n,h])=>`<button class="menu-i" role="menuitem" data-act="plat-filter" data-p="${h}"><i class="pf-dot" style="--sw:${h}"></i>${esc(platLabel(n))}${chk(platFilter===h)}</button>`).join('')}
+        <button class="menu-i" role="menuitem" data-act="plat-filter" data-p="none"><i class="pf-dot none"></i>${esc(t('filter.noPlatform'))}${chk(platFilter==='none')}</button>`, '');
+      break;
+    case 'plat-filter': platFilter = b.dataset.p || null; closePop(); render(); break;
+    case 'clear-filters': qf.clear(); typeFilter = null; platFilter = null; query = ''; $('#q').value = ''; render(); break;
+
+    /* issues */
+    case 'add-inline': openComposer(b.dataset.status); break;
+    case 'card-menu': openPop(b, statusMenu(i, true), i.id); break;
+    case 'status-menu': openPop(b, statusMenu(i, false), i.id); break;
+    case 'set-status': {
+      const fromModal = modalKind === 'issue';
+      closePop(); moveIssue(i.id, b.dataset.status, null, {toast:!fromModal});
+      if (fromModal) $('.status-btn',layer)?.classList.add('flash');
+      else $(`.card[data-id="${i.id}"]`,board)?.focus({preventScroll:true});
+      break; }
+    case 'set-color': setColor(i, b.dataset.c); if (inPop) closePop(); if (modalKind === 'issue') refreshIssue(); break;
+    case 'create-color': b.closest('form').color.value = b.dataset.c; markPicked(b); break;
+    case 'open-issue': closePop(); openIssue(i.id); break;
+    case 'copy-key': closePop(); copyText(key(i)).then(ok=>toast(ok ? t('toast.copied', {key:key(i)}) : key(i))); break;
+    case 'del-issue': closePop(); deleteIssue(i.id); break;
+    case 'archive-issue': closePop(); archiveIssues([i], t('toast.archived', {key:key(i)})); break;
+    case 'archive-col': {
+      const st = b.dataset.status, list = scopeIssues().filter(matches).filter(x=>st.startsWith('v:') ? vKey(x)===st : x.status===st);
+      archiveIssues(list, tn('toast.archivedN', list.length));
+      break; }
+    case 'restore': restoreIssue(i); break;
+    case 'close-modal': closeModal(); break;
+    case 'clear-due': i.due = ''; touch(i, t('h.dueNone')); save(); render(); refreshIssue(); break;
+    case 'label-del': { const l = b.dataset.l; i.labels = i.labels.filter(x=>x!==l); touch(i, t('h.companyRemove', {name:l})); save(); render(); refreshIssue(); break; }
+    case 'link-del': {
+      const li = b.closest('li'), l = i.links.find(x=>x.id===li.dataset.lid), ix = i.links.indexOf(l);
+      i.links.splice(ix,1); touch(i, t('h.linkRemove', {name:l.title || hostOf(l.url)})); save(); render();
+      li.classList.add('out'); setTimeout(()=>refreshIssue(), reduce?0:190);
+      toast(t('toast.linkRemoved'), {action:t('btn.undo'), fn:()=>{ i.links.splice(ix,0,l); save(); render(); refreshIssue(); }});
+      break; }
+    case 'tab': tab = b.dataset.tab; refreshIssue(); break;
+    case 'st-toggle': {
+      const li = b.closest('li'), s = i.subtasks.find(s=>s.id===li.dataset.sid);
+      s.done = !s.done; li.classList.toggle('done', s.done); b.setAttribute('aria-pressed', s.done); b.setAttribute('aria-label', s.done?t('st.undone'):t('st.done'));
+      touch(i, t(s.done ? 'h.stDone' : 'h.stUndone', {name:s.text})); save(); render();
+      const pct = pctOf(i); $('#stMeta',layer).textContent = t('st.pct', {n:pct}); setBar(pct);
+      if (pct === 100 && !isDone(i)){
+        const doneCol = boardOf(i).columns.find(c=>c.cat==='done');
+        if (doneCol) toast(t('toast.allSubtasks'), {action:t('btn.moveTo', {col:doneCol.name}), fn:()=>moveIssue(i.id, doneCol.id, null)});
+      }
+      break; }
+    case 'st-del': {
+      const li = b.closest('li'), s = i.subtasks.find(s=>s.id===li.dataset.sid);
+      i.subtasks = i.subtasks.filter(x=>x!==s); touch(i, t('h.stDelete', {name:s.text})); save(); render();
+      li.classList.add('out'); setTimeout(()=>{ li.remove(); if (!i.subtasks.length) refreshIssue(); else { const p = pctOf(i); $('#stMeta',layer).textContent = t('st.pct', {n:p}); setBar(p); } }, reduce?0:190);
+      break; }
+    case 'cmt-save': saveComment(); break;
+    case 'cmt-cancel': cmtDraft = ''; { const ta = $('[data-k="cmt"]',layer); ta.value = ''; autosize(ta); ta.blur(); } break;
+    case 'cmt-edit': editingCid = b.closest('li').dataset.cid; refreshIssue(); { const ta = $('[data-k="cmt-edit"]',layer); ta?.focus(); ta?.setSelectionRange(ta.value.length, ta.value.length); } break;
+    case 'cmt-edit-cancel': editingCid = null; refreshIssue(); break;
+    case 'cmt-update': updateComment($('[data-k="cmt-edit"]',layer)); break;
+    case 'cmt-del': {
+      const cid = b.closest('li').dataset.cid, ix = i.comments.findIndex(c=>c.id===cid), [c] = i.comments.splice(ix,1);
+      touch(i); save(); render(); refreshIssue();
+      toast(t('toast.cmtDeleted'), {action:t('btn.undo'), fn:()=>{ i.comments.splice(ix,0,c); save(); render(); refreshIssue(); }});
+      break; }
+    case 'sort': { const k = b.dataset.k; sortBy = sortBy.k === k ? {k, dir:-sortBy.dir} : {k, dir:1}; render(); break; }
+
+    /* board settings editor */
+    case 'bd-logo': pickLogo('board'); break;
+    case 'bd-logo-del': bDraft.logo = null; $('#bsBody',layer).innerHTML = boardSettingsBody(); break;
+    case 'bd-color': bDraft.color = b.dataset.c; markPicked(b); { const pv = $('.logo-prev .b-av',layer); if (pv) pv.style.setProperty('--bc', bDraft.color); } break;
+    case 'bd-addcol': {
+      const c = {id:uid(), name:'', cat:'doing'};
+      const doneIx = bDraft.columns.findIndex(x=>x.cat==='done');
+      doneIx > 0 ? bDraft.columns.splice(doneIx,0,c) : bDraft.columns.push(c);
+      rerenderCols(true);
+      const row = $(`.ed-row[data-cid="${c.id}"]`,layer); row?.classList.add('in'); $('.ce-name',row)?.focus();
+      break; }
+    case 'bd-colup': case 'bd-coldown': {
+      const cid = b.closest('.ed-row').dataset.cid, cs = bDraft.columns, ix = cs.findIndex(c=>c.id===cid), to = ix + (act==='bd-colup' ? -1 : 1);
+      if (to < 0 || to >= cs.length) break;
+      [cs[ix], cs[to]] = [cs[to], cs[ix]];
+      rerenderCols(true);
+      const same = $(`[data-k="${b.dataset.k}"]`,layer);
+      if (!same || same.disabled) $(`[data-k="cname-${cid}"]`,layer)?.focus();
+      break; }
+    case 'bd-delcol': {
+      const cid = b.closest('.ed-row').dataset.cid, c = bDraft.columns.find(x=>x.id===cid);
+      if (bDraft.columns.length === 1) break;
+      if (!bDraft.isNew && colIssueCount(cid) > 0){ c._confirm = true; c._target = bDraft.columns.find(x=>x.id!==cid).id; rerenderCols(false); $(`[data-k="cyes-${cid}"]`,layer)?.focus(); }
+      else removeDraftCol(cid);
+      break; }
+    case 'bd-delcol-yes': { const cid = b.closest('.ed-row').dataset.cid, c = bDraft.columns.find(x=>x.id===cid); bDraft.removed[cid] = c._target; removeDraftCol(cid); break; }
+    case 'bd-delcol-no': { const cid = b.closest('.ed-row').dataset.cid, c = bDraft.columns.find(x=>x.id===cid); delete c._confirm; rerenderCols(false); $(`[data-k="cdel-${cid}"]`,layer)?.focus(); break; }
+
+    /* types editor */
+    case 'ty-preset': {
+      const preset = TYPES_PPC(), keep = new Set(preset.map(x=>x.id));
+      tDraft.types.forEach(x=>{ if (!keep.has(x.id)) tDraft.removed[x.id] = preset[0].id; });
+      tDraft.types = preset.map(x=>({...x, _new:true})); tDraft.err = '';
+      rerender($('#tyBody',layer), typesBody()); tDraft.types.forEach(x=>{ delete x._new; }); break; }
+    case 'ty-add': {
+      const used = new Set(tDraft.types.map(x=>x.color));
+      const ty = {id:'t-'+uid(), name:'', color:(PALETTE.find(([,h])=>!used.has(h))||PALETTE[0])[1], glyph:'ring', _new:true};
+      tDraft.types.push(ty); rerender($('#tyBody',layer), typesBody()); delete ty._new;
+      $(`[data-k="tname-${ty.id}"]`,layer)?.focus();
+      break; }
+    case 'ty-style': { const tid = b.closest('.ed-row').dataset.tid, ty = tDraft.types.find(x=>x.id===tid); openPop(b, typeStylePop(ty), tid); break; }
+    case 'ty-color': case 'ty-glyph': {
+      const tid = pop.dataset.id, ty = tDraft?.types.find(x=>x.id===tid); if (!ty) break;
+      if (act === 'ty-color') ty.color = b.dataset.c; else ty.glyph = b.dataset.g;
+      const focusSel = act === 'ty-color' ? `.sw[data-c="${ty.color}"]` : `.glyph-btn[data-g="${ty.glyph}"]`;
+      pop.innerHTML = typeStylePop(ty); $(focusSel,pop)?.focus();
+      const ico = $(`.ed-row[data-tid="${tid}"] .ty-ico`,layer); if (ico) ico.innerHTML = typeSVG(ty);
+      break; }
+    case 'ty-del': {
+      const tid = b.closest('.ed-row').dataset.tid, ty = tDraft.types.find(x=>x.id===tid);
+      if (tDraft.types.length === 1) break;
+      if (typeCount(tid) > 0){ ty._confirm = true; ty._target = tDraft.types.find(x=>x.id!==tid).id; rerender($('#tyBody',layer), typesBody()); $(`[data-k="tyes-${tid}"]`,layer)?.focus(); }
+      else removeDraftType(tid);
+      break; }
+    case 'ty-del-yes': { const tid = b.closest('.ed-row').dataset.tid, ty = tDraft.types.find(x=>x.id===tid); tDraft.removed[tid] = ty._target; removeDraftType(tid); break; }
+    case 'ty-del-no': { const tid = b.closest('.ed-row').dataset.tid, ty = tDraft.types.find(x=>x.id===tid); delete ty._confirm; rerender($('#tyBody',layer), typesBody()); $(`[data-k="tdel-${tid}"]`,layer)?.focus(); break; }
+  }
+});
+document.addEventListener('keydown', e=>{
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.board-item, .bi-menu')){ e.preventDefault(); e.target.click(); }
+});
+function animateOut(row, fn){
+  if (!row || reduce){ fn(); return; }
+  row.animate([{opacity:1, transform:'none'},{opacity:0, transform:`translateX(${rtl()?-12:12}px)`}],{duration:180, easing:'ease-in'}).onfinish = fn;
+}
+function removeDraftCol(cid){
+  const row = $(`.ed-row[data-cid="${cid}"]`,layer);
+  animateOut(row, ()=>{ bDraft.columns = bDraft.columns.filter(c=>c.id!==cid); bDraft.columns.forEach(c=>{ if (c._target === cid) c._target = bDraft.columns.find(x=>x.id!==c.id)?.id; }); rerenderCols(true); });
+}
+function removeDraftType(tid){
+  const row = $(`.ed-row[data-tid="${tid}"]`,layer);
+  animateOut(row, ()=>{ tDraft.types = tDraft.types.filter(x=>x.id!==tid); tDraft.types.forEach(x=>{ if (x._target === tid) x._target = tDraft.types.find(y=>y.id!==x.id)?.id; }); rerender($('#tyBody',layer), typesBody()); });
+}
+
+/* gate forms (sign-in demo, request access on the welcome screen) */
+gateEl.addEventListener('submit', async e=>{
+  e.preventDefault();
+  const form = e.target;
+  if (form.dataset.form === 'demo-signin'){
+    const f = new FormData(form), email = lower(f.get('email'));
+    if (!isEmail(email)){ form.email.focus(); form.email.classList.add('bad'); return; }
+    await store.signIn({name:String(f.get('name')||'').trim(), email});
+  }
+  if (form.dataset.form === 'request') sendRequest(form);
+});
+gateEl.addEventListener('input', e=>{
+  if (e.target.id === 'wsNameIn') e.target.dataset.touched = '1';
+  if (e.target.name === 'email'){ e.target.classList.remove('bad'); const er = $('#reqErr'); if (er) er.hidden = true; }
+});
+
+/* ================= Keyboard shortcuts ================= */
+document.addEventListener('keydown', e=>{
+  if (e.key === 'Escape'){
+    if (popAnchor){ const a = popAnchor; closePop(); a.focus(); return; }
+    if (modalKind){ e.preventDefault(); closeModal(); return; }
+    if (shell.classList.contains('side-open')){ shell.classList.remove('side-open'); return; }
+    if (document.activeElement === $('#q') && $('#q').value){ $('#q').value = ''; query = ''; render(); return; }
+    return;
+  }
+  if (screen !== 'app') return;
+  const typing = e.target.closest?.('input,textarea,select,[contenteditable]');
+  if (typing || e.ctrlKey || e.metaKey || e.altKey || modalKind || drag?.active) return;
+  const k = e.key.toLowerCase(), code = e.code;
+  if ((k === 'c' || code === 'KeyC') && !e.shiftKey){ e.preventDefault(); openCreate(); }
+  else if (e.key === '/' || code === 'Slash' && !e.shiftKey){ e.preventDefault(); $('#q').focus(); $('#q').select(); }
+  else if (k === 'b' || code === 'KeyB'){ P.view = 'board'; savePrefs(); render(); }
+  else if (k === 'l' || code === 'KeyL'){ P.view = 'list'; savePrefs(); render(); }
+  else if (k === 'a' || code === 'KeyA'){ if (S.boards.length) switchBoard(ALL); }
+  else if (e.key === '?'){ openShortcuts(); }
+});
+$('#q').addEventListener('input', e=>{ query = e.target.value; render(); });
+
+/* ================= Toasts ================= */
+function toast(msg, opt={}){
+  const box = $('#toasts');
+  while (box.children.length >= 3) box.firstElementChild.remove();
+  const el = document.createElement('div'); el.className = 'toast'; el.setAttribute('role','status');
+  el.innerHTML = `<span class="t-check">${I.check}</span><span class="t-msg" data-bidi></span>${opt.action?`<button class="btn sm">${esc(opt.action)}</button>`:''}`;
+  $('.t-msg',el).textContent = msg;
+  box.appendChild(el);
+  let gone = false;
+  const close = ()=>{ if (gone) return; gone = true; el.classList.add('out'); setTimeout(()=>el.remove(), reduce?0:200); };
+  if (opt.action) $('button',el).onclick = ()=>{ close(); opt.fn(); };
+  let timer = setTimeout(close, opt.action ? 6000 : 3200);
+  el.onmouseenter = ()=>clearTimeout(timer);
+  el.onmouseleave = ()=>{ timer = setTimeout(close, 2000); };
+}
+
+/* ================= Clipboard, backup ================= */
+async function copyText(s){
+  try { await navigator.clipboard.writeText(s); return true; }
+  catch(e){
+    try { const ta = document.createElement('textarea'); ta.value = s; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy'); ta.remove(); return ok; } catch(e2){ return false; }
+  }
+}
+function exportData(){
+  flush();
+  const json = JSON.stringify({app:'workbench', version:5, exported:new Date().toISOString(), workspace:ws?.name, boards:S.boards, types:S.types, issues:S.issues}, null, 2);
+  const blob = new Blob([json], {type:'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `workbench-backup-${today()}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  toast(t('toast.exported'));
+}
+$('#importFile').addEventListener('change', async e=>{
+  const f = e.target.files[0]; e.target.value = ''; if (!f || !canEdit()) return;
+  try {
+    const raw = JSON.parse(await f.text());
+    const conv = convertLocal(raw);
+    if (!conv.boards.length) throw new Error('bad');
+    openConfirm({title:t('imp.title'), ok:t('imp.ok'), text:esc(t('imp.text', {b:tn('boards', conv.boards.length), i:tn('issues', conv.issues.length)})), fn:()=>{
+      const startOrder = (S.boards.at(-1)?.order ?? 0) + 1000;
+      conv.boards.forEach((b,ix)=>{ b.order = startOrder + ix*1000; let k = b.key, n = 2; while (S.boards.some(x=>x.key===k)) k = b.key + (n++); b.key = k; });
+      const known = new Set(S.types.map(x=>x.id));
+      conv.types.forEach(x=>{ if (!known.has(x.id)) S.types.push(x); });
+      S.boards.push(...conv.boards); S.issues.push(...conv.issues.map(i=>({...i, rank:undefined})));
+      save(); closeModal(); render(); toast(t('toast.imported', {n:tn('issues', conv.issues.length)}));
+    }});
+  } catch(err){ toast(t('toast.importBad')); }
+});
+
+/* ================= Theme, language, shell ================= */
+const sysDark = matchMedia('(prefers-color-scheme: dark)');
+const effectiveTheme = ()=>P.theme || (sysDark.matches ? 'dark' : 'light');
+function setTheme(th, animate){
+  if (th){ P.theme = th; savePrefs(); }
+  const root = document.documentElement, apply = ()=>{ root.dataset.theme = effectiveTheme(); };
+  // Cross-fade the whole page on the GPU instead of transitioning every element's colors.
+  if (animate && !reduce && document.startViewTransition && root.dataset.theme !== effectiveTheme()) document.startViewTransition(apply);
+  else apply();
+  const btn = $('#themeBtn'); if (btn){ btn.innerHTML = effectiveTheme() === 'dark' ? I.sun : I.moon; btn.title = btn.ariaLabel = effectiveTheme() === 'dark' ? t('nav.light') : t('nav.dark'); }
+}
+sysDark.addEventListener?.('change', ()=>{ if (!P.theme) setTheme(null); });
+function applyShell(){ shell.classList.toggle('side-closed', !P.side); }
+matchMedia('(max-width:1024px)').addEventListener?.('change', ()=>shell.classList.remove('side-open'));
+function staticText(){
+  $$('[data-t]').forEach(el=>{ el.textContent = t(el.dataset.t); });
+  $$('[data-tt]').forEach(el=>{ el.title = t(el.dataset.tt); el.setAttribute('aria-label', t(el.dataset.tt)); });
+  $$('[data-tp]').forEach(el=>{ el.placeholder = t(el.dataset.tp); el.setAttribute('aria-label', t(el.dataset.tp)); });
+}
+function rerenderGate(){
+  if (screen === 'signin') renderSignIn();
+  else if (screen === 'welcome') renderWelcome();
+}
+function relocalize(){
+  staticText(); setTheme(null); renderNavWs(); rerenderGate();
+  if (modalKind){ const k = modalKind; closeModal(true); if (k === 'wsSettings') openWsSettings(); if (k === 'request') openRequestAccess(); }
+  render();
+}
+
+/* ================= Init ================= */
+$$('[data-i]').forEach(el=>el.insertAdjacentHTML('afterbegin', I[el.dataset.i]));
+if (!['board','list','archive'].includes(P.view)) P.view = 'board';
+setLang(getLang()); staticText(); setTheme(null); applyShell();
+renderLoading();
+setInterval(()=>{ if (screen === 'app' && !drag && !modalKind && !composer && !popAnchor) render(); }, 60000);
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
+createStore().then(s=>{
+  store = s;
+  document.body.classList.toggle('demo', s.mode === 'demo');
+  $('#demoBar').hidden = s.mode !== 'demo';
+  if (s.mode === 'demo') window.__wb = { get S(){ return S; }, get ws(){ return ws; }, get wsList(){ return wsList; }, flush, render, P }; // test hook, demo mode only
+  $('#sideNote').dataset.t = s.mode === 'demo' ? 'side.noteDemo' : 'side.note'; staticText();
+  s.onAuth(onAuth, e=>{ console.error(e); toast(t('toast.signinFailed')); });
+}).catch(err=>{ console.error(err); showGate(gateFrame(`<h1>${esc(t('gate.errTitle'))}</h1><p class="gate-sub">${esc(t('gate.errText'))}</p>`)); });
+

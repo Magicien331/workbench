@@ -1,0 +1,76 @@
+rules_version = '2';
+// Workbench security rules. Paste into Firebase console → Firestore Database → Rules → Publish.
+//
+// Who can do what:
+//  - Only Google accounts with a verified email can use the database at all.
+//  - Only emails listed in the "allow" collection can create workspaces (you add them in the Firebase console).
+//  - A workspace is visible only to its owner and the emails the owner shared it with.
+//  - Owner and editors can change boards and tasks; viewers can only read; only the owner manages sharing.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null && request.auth.token.email != null && request.auth.token.email_verified == true; }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function safeId(id) { return id.matches('^[A-Za-z0-9_-]{1,64}$'); }
+    function wsDoc(wsId) { return get(/databases/$(database)/documents/workspaces/$(wsId)).data; }
+    function canRead(wsId) { let w = wsDoc(wsId); return w.ownerUid == request.auth.uid || myEmail() in w.memberEmails; }
+    function canWrite(wsId) { let w = wsDoc(wsId); return w.ownerUid == request.auth.uid || w.roles.get(myEmail(), '') == 'editor'; }
+    function okLogo(v) { return v == null || (v is string && v.size() < 200000 && v.matches('^data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$')); }
+    function okText(v, max) { return v is string && v.size() <= max; }
+
+    // Allow list: one document per email that may create workspaces (document ID = the email in lower case).
+    match /allow/{email} {
+      allow read: if signedIn() && email == myEmail();
+      allow write: if false;
+    }
+
+    match /workspaces/{wsId} {
+      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || myEmail() in resource.data.memberEmails);
+      allow create: if signedIn()
+        && exists(/databases/$(database)/documents/allow/$(myEmail()))
+        && wsId.matches('^' + request.auth.uid + '_[A-Za-z0-9]{6,32}$')
+        && request.resource.data.keys().hasOnly(['name','logo','ownerUid','ownerEmail','ownerName','roles','memberEmails','created','lang'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerEmail == myEmail()
+        && request.resource.data.memberEmails == []
+        && request.resource.data.roles == {}
+        && okText(request.resource.data.name, 100)
+        && okText(request.resource.data.ownerName, 200)
+        && okLogo(request.resource.data.get('logo', null));
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name','logo','roles','memberEmails','lang'])
+        && request.resource.data.memberEmails is list && request.resource.data.memberEmails.size() <= 50
+        && request.resource.data.roles is map && request.resource.data.roles.size() <= 50
+        && okText(request.resource.data.name, 100)
+        && okLogo(request.resource.data.get('logo', null));
+      allow delete: if false;
+
+      // Boards, tasks and settings inside a workspace
+      match /{coll}/{docId} {
+        allow read: if signedIn() && canRead(wsId);
+        allow write: if signedIn() && coll in ['boards', 'issues', 'meta'] && safeId(docId) && canWrite(wsId);
+      }
+    }
+
+    // Access requests: a signed-in person asks an email for access; that person approves or declines.
+    match /requests/{reqId} {
+      allow create: if signedIn()
+        && reqId == request.auth.uid + '_' + request.resource.data.toEmail
+        && request.resource.data.keys().hasOnly(['fromUid','fromEmail','fromName','fromPhoto','toEmail','status','created'])
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.fromEmail == myEmail()
+        && request.resource.data.toEmail is string
+        && request.resource.data.toEmail.matches('^[a-z0-9._%+-]+@[a-z0-9.-]+[.][a-z]{2,}$')
+        && request.resource.data.toEmail != myEmail()
+        && okText(request.resource.data.fromName, 200)
+        && okText(request.resource.data.fromPhoto, 500)
+        && request.resource.data.status == 'pending';
+      allow read: if signedIn() && (resource.data.fromUid == request.auth.uid || resource.data.toEmail == myEmail());
+      allow update: if signedIn() && resource.data.toEmail == myEmail()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','role','wsId','wsName','decidedAt'])
+        && request.resource.data.status in ['approved', 'declined'];
+      allow delete: if signedIn() && (resource.data.fromUid == request.auth.uid || resource.data.toEmail == myEmail());
+    }
+  }
+}
