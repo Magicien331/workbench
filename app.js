@@ -856,7 +856,11 @@ function archivePromptHTML(){
   return `<div class="arch-prompt" role="status"><div class="ap-head">${I.archive}<b>${esc(t('ap.title'))}</b></div><p>${esc(tn('ap.text', n))}</p>
     <div class="ap-acts"><button class="btn primary sm" data-act="ap-yes">${esc(t('ap.yes'))}</button><button class="btn subtle sm" data-act="ap-no">${esc(t('ap.no'))}</button></div></div>`;
 }
+let boardPending = false; // a redraw that arrived mid-drag; done when the card is dropped
 function renderBoard(){
+  // redrawing under a dragged card would bring the card back into its column and drop the placeholder
+  if (drag?.active || settling){ boardPending = true; return; }
+  boardPending = false;
   const all = isAll(), b = curBoard();
   if (!b){
     lastCols = null;
@@ -952,9 +956,22 @@ function renderList(archive){
    sync with the board (and with everyone else) with no extra data. */
 const sheetview = $('#sheetview');
 let sheetSort = {k:null, dir:1}, sheetCache = null, sheetPending = false, sheetFocusVal = null, lastTouch = null;
-function sheetCols(){
-  return ['key','title','status','prio',...(isAll() ? ['board'] : []),'type','plat','start','due','company','desc','subs','by'];
+// every column the table can show; the task name is always shown, the rest can be hidden (P.sheetHide, per device)
+const sheetAllCols = ()=>['key','title','status','prio',...(isAll() ? ['board'] : []),'type','plat','start','due','company','desc','subs','by'];
+const sheetHidden = ()=>new Set((Array.isArray(P.sheetHide) ? P.sheetHide : []).filter(k=>k !== 'title'));
+function sheetCols(){ const h = sheetHidden(); return sheetAllCols().filter(k=>!h.has(k)); }
+function sheetColsMenu(){
+  const h = sheetHidden();
+  return `<div class="menu-h">${esc(t('sheet.colsShow'))}</div><div class="sf-list dash-pick">${sheetAllCols().map(k=>{ const on = !h.has(k), lock = k === 'title';
+      return `<button class="menu-i" role="menuitemcheckbox" aria-checked="${on}" data-act="s-col" data-k="${k}"${lock ? ' aria-disabled="true"' : ''}><span class="sf-box${on ? ' on' : ''}${lock ? ' lock' : ''}">${on ? I.check : ''}</span><span class="sf-l">${esc(t('x.col.' + k))}${lock ? `<small class="dash-only">${esc(t('sheet.colAlways'))}</small>` : ''}</span></button>`; }).join('')}</div>
+    ${h.size ? `<div class="menu-sep"></div><div class="dash-pick-f"><button class="link-btn" data-act="s-colsall">${esc(t('sheet.colsAll'))}</button></div>` : ''}`;
 }
+function sheetColsRefresh(){
+  render();
+  const btn = $('[data-act="s-cols"]', sheetview);
+  if (popAnchor && pop.dataset.id === 'scols' && btn){ popAnchor = btn; btn.setAttribute('aria-expanded', 'true'); const sc = $('.sf-list', pop)?.scrollTop || 0; pop.innerHTML = sheetColsMenu(); $('.sf-list', pop).scrollTop = sc; placePop(); }
+}
+function setSheetHidden(k, hide){ const h = sheetHidden(); hide ? h.add(k) : h.delete(k); P.sheetHide = [...h]; savePrefs(); }
 const PRIO_TINT = {highest:'#C9372C', high:'#E56910', medium:'#B38600', low:'#1D7AFC', lowest:'#626F86'};
 function sheetVal(i, k){
   switch(k){
@@ -1062,12 +1079,13 @@ function sheetFilterMenu(k){
   const b = curBoard(), all = isAll(), name = t('x.col.' + k);
   const pool = S.issues.filter(i=>!i.archived && (all || i.boardId === b?.id)).filter(matches).filter(i=>sheetMatch(i, k));
   if (SF_KIND[k] === 'text') return `<div class="menu-h">${esc(t('sf.by', {col:name}))}</div><div class="pop-pad sf-text"><input class="inp" data-k="s-ftext" data-col="${k}" value="${esc(sheetF[k] || '')}" placeholder="${esc(t('sf.contains'))}" data-bidi autocomplete="off"></div>
-    ${sheetF[k] ? `<div class="menu-sep"></div><button class="menu-i" role="menuitem" data-act="s-fclear" data-k="${k}">${I.x}${esc(t('sf.clearCol'))}</button>` : ''}`;
+    ${sheetF[k] ? `<div class="menu-sep"></div><button class="menu-i" role="menuitem" data-act="s-fclear" data-k="${k}">${I.x}${esc(t('sf.clearCol'))}</button>` : ''}${k !== 'title' ? `<div class="menu-sep"></div><button class="menu-i" role="menuitem" data-act="s-hidecol" data-k="${k}">${I.eyeOff}${esc(t('sheet.hideCol'))}</button>` : ''}`;
   const f = sheetF[k], opts = sfOptions(k, pool);
   const dot = v=>k === 'plat' ? `<i class="pf-dot${v ? '' : ' none'}"${v ? ` style="--sw:${v}"` : ''}></i>` : k === 'type' ? typeSVG(typeOf(v)) : k === 'prio' ? prioIcon(v) : k === 'board' ? bAv(boardById(v), 'xs') : '';
+  const hideCol = `<div class="menu-sep"></div><button class="menu-i" role="menuitem" data-act="s-hidecol" data-k="${k}">${I.eyeOff}${esc(t('sheet.hideCol'))}</button>`;
   return `<div class="menu-h">${esc(t('sf.showOnly', {col:name}))}</div>
     <button class="menu-i" role="menuitem" data-act="s-fall" data-k="${k}"><span class="sf-box${!f ? ' on' : ''}">${!f ? I.check : ''}</span>${esc(t('sf.all'))}</button>
-    <div class="sf-list">${opts.map(o=>`<button class="menu-i" role="menuitemcheckbox" aria-checked="${!!f?.has(o.v)}" data-act="s-fval" data-k="${k}" data-v="${esc(o.v)}"><span class="sf-box${f?.has(o.v) ? ' on' : ''}">${f?.has(o.v) ? I.check : ''}</span>${dot(o.v)}<span class="sf-l" data-bidi>${esc(sfLabel(k, o.v))}</span><span class="sf-n">${o.n}</span></button>`).join('') || `<p class="muted-p pop-pad">${esc(t('sf.none'))}</p>`}</div>`;
+    <div class="sf-list">${opts.map(o=>`<button class="menu-i" role="menuitemcheckbox" aria-checked="${!!f?.has(o.v)}" data-act="s-fval" data-k="${k}" data-v="${esc(o.v)}"><span class="sf-box${f?.has(o.v) ? ' on' : ''}">${f?.has(o.v) ? I.check : ''}</span>${dot(o.v)}<span class="sf-l" data-bidi>${esc(sfLabel(k, o.v))}</span><span class="sf-n">${o.n}</span></button>`).join('') || `<p class="muted-p pop-pad">${esc(t('sf.none'))}</p>`}</div>${hideCol}`;
 }
 function sheetFRefresh(k){
   render();
@@ -1076,8 +1094,10 @@ function sheetFRefresh(k){
   if (popAnchor && btn){ popAnchor = btn; btn.setAttribute('aria-expanded', 'true'); pop.innerHTML = sheetFilterMenu(k); placePop(); }
 }
 function sheetFBar(){
-  const act = Object.entries(sheetF).filter(([,v])=>v); if (!act.length) return '';
-  return `<div class="s-fbar">${I.funnel}${act.map(([k, v])=>`<span class="s-fchip"><b>${esc(t('x.col.' + k))}:</b> <span data-bidi>${esc(typeof v === 'string' ? `"${v}"` : [...v].map(x=>sfLabel(k, x)).join(', '))}</span><button class="btn icon subtle sm" data-act="s-fclear" data-k="${k}" aria-label="${esc(t('sf.clearCol'))}">${I.x}</button></span>`).join('')}
+  const act = Object.entries(sheetF).filter(([,v])=>v), nh = sheetHidden().size;
+  const cols = `<button class="btn subtle sm s-colsbtn" data-act="s-cols" aria-haspopup="true" aria-expanded="false">${I.table}<span>${esc(t('sheet.cols'))}</span>${nh ? `<span class="dash-hid">${esc(tn('sheet.hiddenN', nh))}</span>` : ''}</button>`;
+  if (!act.length) return `<div class="s-fbar">${cols}</div>`;
+  return `<div class="s-fbar">${cols}<span class="s-fsep" aria-hidden="true"></span>${I.funnel}${act.map(([k, v])=>`<span class="s-fchip"><b>${esc(t('x.col.' + k))}:</b> <span data-bidi>${esc(typeof v === 'string' ? `"${v}"` : [...v].map(x=>sfLabel(k, x)).join(', '))}</span><button class="btn icon subtle sm" data-act="s-fclear" data-k="${k}" aria-label="${esc(t('sf.clearCol'))}">${I.x}</button></span>`).join('')}
     ${act.length > 1 ? `<button class="link-btn" data-act="s-fclear">${esc(t('sf.clearAll'))}</button>` : ''}</div>`;
 }
 
@@ -1128,7 +1148,7 @@ function renderSheet(){
   const empty = !rows.length ? `<tr class="s-empty"><td colspan="${cols.length}">${esc(filtering() || sheetFCount() ? t('empty.listFiltered') : t('sheet.empty'))}</td></tr>` : '';
   // the add bar lives outside the table: a sticky table footer cell drew as a blank box over the name column in iOS Safari
   const add = edit ? `<form data-form="sheet-add" class="s-addbar">${I.plus}<input data-k="sheet-add" placeholder="${esc(all ? t('sheet.addIn', {board:(boardById(P.lastBoard?.[wsId]) || S.boards[0]).name}) : t('sheet.add'))}" data-bidi autocomplete="off" enterkeyhint="done" aria-label="${esc(t('sheet.add'))}"></form>` : '';
-  sheetview.innerHTML = fbar + `<table class="sheet${all?' all':''}"><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody></table>${add}`;
+  sheetview.innerHTML = fbar + `<table class="sheet${all?' all':''}${cols.includes('key') ? '' : ' nokey'}"><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody></table>${add}`;
   sheetview.scrollLeft = sx; sheetview.scrollTop = sy;
   if (addVal != null){ const ad = $('[data-k="sheet-add"]', sheetview); if (ad){ ad.value = addVal; ad.focus({preventScroll:true}); } }
   sheetCache = {key:layoutKey, order, html:new Map(rows), scope};
@@ -1250,7 +1270,10 @@ function calChip(i, cls=''){
   return `<button class="cal-chip${done?' done':''}${over?' over':''} ${cls}" data-act="open-issue" data-id="${i.id}" title="${esc(tip)}" style="--cc:${i.color || typeOf(i.type).color}">${isAll() ? bAv(boardOf(i),'xs') : ''}<span class="cc-t" data-bidi>${esc(i.title || t('issue.untitled'))}</span></button>`;
 }
 function calSort(a, b){ return (isDone(a) - isDone(b)) || (PRANK[a.priority] - PRANK[b.priority]) || a.title.localeCompare(b.title); }
+let calPending = false;
 function renderCal(){
+  if (calDrag?.active){ calPending = true; return; }
+  calPending = false;
   const all = isAll(), b = curBoard(), edit = canEdit();
   if (!b){ calview.innerHTML = `<div class="empty-state"><b>${esc(t('empty.noBoards'))}</b></div>`; return; }
   if (!calAnchor) calAnchor = today();
@@ -1351,7 +1374,9 @@ calview.addEventListener('pointerdown', e=>{
   if (calDrag.touch) calDrag.timer = setTimeout(()=>{ if (calDrag && !calDrag.active) calBegin(); }, 300);
 });
 function calBegin(){
-  const d = calDrag, r = d.chip.getBoundingClientRect();
+  const d = calDrag;
+  if (!d.chip.isConnected){ const c = $(`.cal-chip[data-id="${CSS.escape(d.id)}"]`, calview); if (!c){ calDrag = null; return; } d.chip = c; }
+  const r = d.chip.getBoundingClientRect(); if (!r.width){ calDrag = null; return; }
   d.active = true; d.ox = d.sx - r.left; d.oy = d.sy - r.top;
   if (d.touch && navigator.vibrate) navigator.vibrate(10);
   const g = d.chip.cloneNode(true); g.classList.add('cal-ghost'); g.style.width = r.width+'px'; g.style.transform = `translate(${r.left}px,${r.top}px)`;
@@ -1371,8 +1396,8 @@ function calEnd(cancel){
   if (!d.active) return;
   calSuppress = true; setTimeout(()=>{ calSuppress = false; }, 80);
   d.ghost.remove(); d.chip.classList.remove('dragging-src'); document.body.classList.remove('dragging'); d.tgt?.classList.remove('drop-on');
-  if (cancel || !d.tgt) return;
-  const i = get(d.id); if (i) calMoveDue(i, d.tgt.dataset.day);
+  if (cancel || !d.tgt){ if (calPending) renderCal(); return; }
+  const i = get(d.id); if (i) calMoveDue(i, d.tgt.dataset.day); if (calPending) renderCal();
 }
 window.addEventListener('pointerup', ()=>calEnd(false));
 window.addEventListener('pointercancel', ()=>calEnd(true));
@@ -1768,7 +1793,10 @@ document.addEventListener('touchmove', e=>{ if (drag && drag.active) e.preventDe
 board.addEventListener('contextmenu', e=>{ if (e.target.closest('.card')) e.preventDefault(); });
 function begin(){
   lastCols = null;
+  // the board may have been redrawn since the press (a sync from the server): use the card that is on screen now
+  if (!drag.card.isConnected){ const c = $(`.card[data-id="${CSS.escape(drag.id)}"]`, board); if (!c){ drag = null; return; } drag.card = c; }
   const card = drag.card, r = card.getBoundingClientRect();
+  if (!r.width){ drag = null; return; }
   closePop();
   drag.active = true; drag.ox = drag.sx - r.left; drag.oy = drag.sy - r.top;
   if (drag.touch && navigator.vibrate) navigator.vibrate(10);
@@ -1830,15 +1858,16 @@ function end(cancel){
   suppressClick = true; setTimeout(()=>{ suppressClick = false; }, 60);
   document.body.classList.remove('dragging');
   $$('.col.over',board).forEach(c=>c.classList.remove('over'));
-  if (cancel){ d.ghost.remove(); d.ph.remove(); d.card.classList.remove('is-hidden'); return; }
-  const list = d.ph.parentElement, status = list.dataset.status, beforeId = nextCard(d.ph)?.dataset.id;
-  if (reduce){ d.ghost.remove(); moveIssue(d.id, status, beforeId); return; }
+  if (cancel){ d.ghost.remove(); d.ph.remove(); d.card.classList.remove('is-hidden'); if (boardPending) renderBoard(); return; }
+  const list = d.ph.parentElement, status = list?.dataset.status, beforeId = nextCard(d.ph)?.dataset.id;
+  if (!status || !get(d.id)){ d.ghost.remove(); d.ph.remove(); d.card.classList.remove('is-hidden'); lastCols = null; renderBoard(); return; }
+  if (reduce){ d.ghost.remove(); moveIssue(d.id, status, beforeId); if (boardPending) renderBoard(); return; }
   settling = true;
   const r = d.ph.getBoundingClientRect();
   d.ghost.style.transition = 'transform .18s cubic-bezier(.2,.8,.2,1), rotate .18s, scale .18s, box-shadow .18s';
   d.ghost.classList.add('dropping');
   d.ghost.style.transform = `translate(${r.left}px,${r.top}px)`;
-  setTimeout(()=>{ d.ghost.remove(); settling = false; moveIssue(d.id, status, beforeId);
+  setTimeout(()=>{ d.ghost.remove(); settling = false; moveIssue(d.id, status, beforeId); if (boardPending) renderBoard();
     if (isMobile()) $(`.col[data-col="${CSS.escape(status)}"]`,board)?.scrollIntoView({behavior:'smooth', inline:'center', block:'nearest'}); }, 180);
 }
 board.addEventListener('keydown', e=>{
@@ -2781,6 +2810,11 @@ document.addEventListener('click', async e=>{
     case 's-filter': openPop(b, sheetFilterMenu(b.dataset.k), 'sf:' + b.dataset.k); break;
     case 's-fval': { const k = b.dataset.k, v = b.dataset.v; const set = new Set(sheetF[k] || []); set.has(v) ? set.delete(v) : set.add(v); sheetF[k] = set.size ? set : undefined; sheetFRefresh(k); break; }
     case 's-fall': { sheetF[b.dataset.k] = undefined; sheetFRefresh(b.dataset.k); break; }
+    case 's-cols': openPop(b, sheetColsMenu(), 'scols'); break;
+    case 's-col': { const k = b.dataset.k; if (k === 'title') break; setSheetHidden(k, !sheetHidden().has(k)); sheetColsRefresh(); break; }
+    case 's-colsall': P.sheetHide = []; savePrefs(); sheetColsRefresh(); break;
+    case 's-hidecol': { const k = b.dataset.k; closePop(); setSheetHidden(k, true); render();
+      toast(t('sheet.colHidden', {col:t('x.col.' + k)}), {action:t('btn.undo'), fn:()=>{ setSheetHidden(k, false); render(); }}); break; }
     case 's-fclear': { if (b.dataset.k) sheetF[b.dataset.k] = undefined; else sheetF = {}; closePop(); render(); break; }
 
     /* issues */

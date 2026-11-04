@@ -204,13 +204,15 @@ h1{margin:0;font-size:24px;line-height:28px;font-weight:600;letter-spacing:-.01e
 .due .i{width:13px;height:13px}
 .due.over{background:var(--danger-bg);border-color:transparent;color:var(--danger-text)}
 .due.soon{background:var(--warn-bg);border-color:transparent;color:var(--warn-text)}
-.c-foot{display:flex;align-items:center;gap:6px;min-height:24px}
+.c-foot{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;min-height:24px;min-width:0}
+.c-foot > *{flex:none}
+.c-foot .key{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .key{font-size:12px;font-weight:600;color:var(--text-sub);white-space:nowrap}
 .key.done{text-decoration:line-through;color:var(--text-subtlest)}
 .meta-n{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--text-subtlest);margin-inline-start:2px}
 .meta-n .i{width:14px;height:14px}
 .meta-n.all{color:var(--ok)}
-.c-right{margin-inline-start:auto;display:flex;align-items:center;gap:6px}
+.c-right{margin-inline-start:auto;display:flex;align-items:center;gap:6px;flex:none}
 .pts{min-width:20px;height:16px;padding:0 5px;border-radius:8px;background:var(--l-todo-bg);color:var(--l-todo);font-size:12px;font-weight:600;line-height:16px;text-align:center}
 
 .card.is-hidden{display:none}
@@ -958,6 +960,11 @@ textarea[data-bidi],input[data-bidi],p[data-bidi],.c-title,.t-sum{text-align:sta
 .sheet .s-title,.sheet .h-title{position:sticky;inset-inline-start:104px;z-index:1;box-shadow:inset calc(var(--dir-sign,1) * -1px) 0 0 var(--border)}
 [dir="rtl"] .sheet .s-title,[dir="rtl"] .sheet .h-title{--dir-sign:-1}
 .sheet thead .h-key,.sheet thead .h-title{z-index:3}
+.sheet.nokey .s-title,.sheet.nokey .h-title{inset-inline-start:0}
+.s-colsbtn{gap:6px;height:26px}
+.s-fsep{width:1px;height:18px;background:var(--border);margin:0 2px}
+.sf-box.lock{opacity:.5}
+.menu-i[aria-disabled="true"]{cursor:default}
 .sheet tbody tr:hover td{background-image:linear-gradient(var(--hover),var(--hover))} /* layered, so sticky cells stay opaque */
 .sheet tbody tr.s-new td{animation:sNew 1.4s var(--ease)}
 @keyframes sNew{from{background:var(--brand-subtle)}}
@@ -1133,7 +1140,7 @@ button.chip.plain:hover,button.chip.plat:hover{background:var(--hover);filter:no
 .sheet th .s-filt:hover{background:var(--hover);color:var(--text)}
 .sheet th .s-filt.on{opacity:1;color:var(--brand-text);background:var(--brand-subtle)}
 @media (hover:none){ .sheet th .s-filt{opacity:.85} }
-.s-fbar{position:sticky;inset-inline-start:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);background:var(--raised);color:var(--text-sub);font-size:12px}
+.s-fbar{position:sticky;inset-inline-start:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:5px 8px;border-bottom:1px solid var(--border);background:var(--raised);color:var(--text-sub);font-size:12px}
 .s-fbar > .i{width:14px;height:14px;color:var(--brand-text)}
 .s-fchip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 2px 2px 8px;border-radius:999px;background:var(--brand-subtle);color:var(--brand-text)}
 [dir="rtl"] .s-fchip{padding:2px 8px 2px 2px}
