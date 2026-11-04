@@ -2557,10 +2557,25 @@ function toast(msg, opt={}){
   box.appendChild(el);
   let gone = false;
   const close = ()=>{ if (gone) return; gone = true; el.classList.add('out'); setTimeout(()=>el.remove(), reduce?0:200); };
-  if (opt.action) $('button',el).onclick = ()=>{ close(); opt.fn(); };
+  let moved = false; // a swipe that starts on the button must not press it
+  if (opt.action) $('button',el).onclick = ()=>{ if (moved) return; close(); opt.fn(); };
   let timer = setTimeout(close, opt.ms || (opt.action ? 6000 : 3200));
-  el.onmouseenter = ()=>clearTimeout(timer);
-  el.onmouseleave = ()=>{ timer = setTimeout(close, 2000); };
+  // pause only while a real mouse is over it: on phones a tap fires mouseenter but never mouseleave,
+  // which kept the message up for good
+  el.addEventListener('pointerenter', e=>{ if (e.pointerType === 'mouse') clearTimeout(timer); });
+  el.addEventListener('pointerleave', e=>{ if (e.pointerType === 'mouse' && !gone){ clearTimeout(timer); timer = setTimeout(close, 2000); } });
+  // swipe sideways (or up/down) to dismiss
+  let sx = 0, sy = 0, dx = 0, dy = 0, swiping = false, pid = null;
+  el.addEventListener('pointerdown', e=>{ pid = e.pointerId; sx = e.clientX; sy = e.clientY; dx = dy = 0; moved = false; swiping = true; el.style.transition = 'none'; });
+  el.addEventListener('pointermove', e=>{ if (!swiping || e.pointerId !== pid) return; dx = e.clientX - sx; dy = e.clientY - sy;
+    if (!moved && Math.max(Math.abs(dx), Math.abs(dy)) > 8){ moved = true; try { el.setPointerCapture(pid); } catch(_){} }
+    if (!moved) return;
+    const d = Math.abs(dx) >= Math.abs(dy) ? `translateX(${dx}px)` : `translateY(${dy}px)`; el.style.transform = d; el.style.opacity = String(Math.max(.2, 1 - Math.max(Math.abs(dx), Math.abs(dy)) / 220)); });
+  const endSwipe = ()=>{ if (!swiping) return; swiping = false; el.style.transition = ''; setTimeout(()=>{ moved = false; }, 0);
+    if (Math.max(Math.abs(dx), Math.abs(dy)) > 50){ clearTimeout(timer); gone = true; el.style.transition = 'transform .18s ease-in, opacity .18s';
+      el.style.transform = Math.abs(dx) >= Math.abs(dy) ? `translateX(${dx > 0 ? 120 : -120}%)` : `translateY(${dy > 0 ? 120 : -120}%)`; el.style.opacity = '0'; setTimeout(()=>el.remove(), 190); }
+    else { el.style.transform = ''; el.style.opacity = ''; } };
+  el.addEventListener('pointerup', endSwipe); el.addEventListener('pointercancel', endSwipe);
 }
 
 /* ================= Clipboard, backup ================= */
