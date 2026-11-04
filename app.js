@@ -151,6 +151,8 @@ const I = {
   more:ic('<circle cx="5.5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.7" fill="currentColor" stroke="none"/>'),
   check:ic('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
   cal:ic('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'),
+  repeat:ic('<path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/>'),
+  chart:ic('<path d="M4 20V10M10 20V4M16 20v-7M21 20H3"/>'),
   sub:ic('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/><path d="M7.5 11v4.5A1.5 1.5 0 0 0 9 17h4"/>'),
   comment:ic('<path d="M5 5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>'),
   menu:ic('<path d="M4 7h16M4 12h16M4 17h16"/>'),
@@ -269,6 +271,91 @@ function normBoard(id, d){
     columns:(Array.isArray(d.columns)&&d.columns.length?d.columns:COLS_BASIC()).map(c=>({id:sid(c?.id, 'c'+uid()), name:String(c.name||''), cat:CATS.includes(c.cat)?c.cat:'todo'}))};
 }
 const normBy = b=>b && typeof b === 'object' ? {uid:String(b.uid||''), name:String(b.name||''), email:String(b.email||''), ...(isPhoto(b.photo) ? {photo:b.photo} : {})} : null;
+/* ---------- recurring tasks ----------
+   A recurring task carries its rule (every day / week / 2 weeks / month) and the date the next copy is due.
+   When that date arrives (checked whenever someone who can edit has the site open) the site makes the copy
+   in the board's first column, and the rule moves on to the new copy. Copies get a fixed id per date, so
+   two people opening the site at the same time can't create it twice. Missed periods aren't backfilled:
+   after a long break only the latest copy is made. */
+const RECUR = ['day','week','2week','month'];
+function normRecur(r){
+  if (!r || typeof r !== 'object' || !RECUR.includes(r.every)) return null;
+  const o = {every:r.every, next:isISO(r.next) ? r.next : today()};
+  if (r.every === 'week' || r.every === '2week') o.wd = Math.min(6, Math.max(0, Number(r.wd) || 0));
+  if (r.every === 'month') o.md = Math.min(31, Math.max(1, Number(r.md) || 1));
+  return o;
+}
+const isoAdd = (d, n)=>{ const x = new Date(d+'T12:00'); x.setDate(x.getDate()+n); return iso(x); };
+function monthDay(y, m, md){ const last = new Date(y, m+1, 0, 12).getDate(); return iso(new Date(y, m, Math.min(md, last), 12)); }
+// the first date strictly after `after` that matches the rule
+function recurFirst(r, after){
+  if (r.every === 'day') return isoAdd(after, 1);
+  if (r.every === 'week' || r.every === '2week'){ const d = new Date(after+'T12:00'); let k = (r.wd - d.getDay() + 7) % 7; if (k === 0) k = 7; return isoAdd(after, k); }
+  const d = new Date(after+'T12:00'); let c = monthDay(d.getFullYear(), d.getMonth(), r.md);
+  if (c <= after) c = monthDay(d.getFullYear(), d.getMonth()+1, r.md);
+  return c;
+}
+// the occurrence after `d` (keeps two-week rules on their rhythm)
+function recurAfter(r, d){
+  if (r.every === 'day') return isoAdd(d, 1);
+  if (r.every === 'week') return isoAdd(d, 7);
+  if (r.every === '2week') return isoAdd(d, 14);
+  const x = new Date(d+'T12:00'); return monthDay(x.getFullYear(), x.getMonth()+1, r.md);
+}
+function recurText(r){
+  if (!r) return t('rc.none');
+  if (r.every === 'day') return t('rc.day');
+  if (r.every === 'month') return t('rc.monthOn', {d:r.md});
+  const wd = fmtr('wdl1', {weekday:'long'}).format(new Date(2026, 10, 1 + r.wd, 12)); // 1 Nov 2026 is a Sunday
+  return t(r.every === 'week' ? 'rc.weekOn' : 'rc.2weekOn', {wd});
+}
+function runRecurring(){
+  if (!canEdit() || !loaded.boards || !loaded.issues || !loaded.meta) return 0;
+  const tday = today(); let made = 0;
+  for (const i of S.issues.slice()){
+    const r = i.recur; if (!r || r.next > tday) continue;
+    const b = boardOf(i); if (!b){ continue; }
+    let d = r.next, guard = 0;
+    while (recurAfter(r, d) <= tday && guard++ < 1000) d = recurAfter(r, d);
+    const series = i.recurOf || i.id, id = ('r-' + series + '-' + d).slice(0, 140);
+    let copy = get(id);
+    if (!copy){
+      const span = i.start && i.due ? daysBetween(i.start, i.due) : null;
+      b.seq = Math.max(b.seq || 0, ...S.issues.filter(x=>x.boardId === b.id).map(x=>x.num)) + 1;
+      const now = Date.now();
+      copy = normIssue(id, {boardId:b.id, num:b.seq, type:i.type, title:i.title, status:b.columns[0].id, priority:i.priority, start:d,
+        due:span != null && span >= 0 ? isoAdd(d, span) : '', desc:i.desc, labels:i.labels.slice(), color:i.color, points:i.points,
+        links:i.links.map(l=>({...l, id:uid()})), subtasks:i.subtasks.map(x=>({id:uid(), text:x.text, done:false})),
+        created:now, updated:now, creator:i.creator || null, recurOf:series,
+        history:[{id:uid(), at:now, text:t('rc.made', {rule:recurText(r)}), by:''}]});
+      copy.rank = undefined; S.issues.push(copy); made++;
+    }
+    copy.recur = {...r, next:recurAfter(r, d)}; copy.recurOf = series;
+    delete i.recur; i.recurOf = series; i.updated = Date.now();
+  }
+  if (made){ save(); render(); toast(tn('rc.toast', made)); }
+  return made;
+}
+setInterval(()=>{ if (screen === 'app') runRecurring(); }, 30 * 60000);
+document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState === 'visible' && screen === 'app') runRecurring(); });
+function recurField(i, edit){
+  const r = i.recur;
+  if (!edit) return `<span class="ro-val${r ? '' : ' t-muted'}">${esc(recurText(r))}</span>`;
+  const wdNames = Array.from({length:7}, (_,k)=>fmtr('wdl1', {weekday:'long'}).format(new Date(2026, 10, 1 + k, 12)));
+  return `<div class="rc-edit"><select class="ctl" data-f="recur" aria-label="${esc(t('f.recur'))}">${['', ...RECUR].map(v=>`<option value="${v}"${(r?.every || '') === v ? ' selected' : ''}>${esc(t('rc.opt.' + (v || 'none')))}</option>`).join('')}</select>
+    ${r && (r.every === 'week' || r.every === '2week') ? `<select class="ctl" data-f="recur-wd" aria-label="${esc(t('rc.wd'))}">${wdNames.map((n,k)=>`<option value="${k}"${r.wd === k ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>` : ''}
+    ${r && r.every === 'month' ? `<select class="ctl" data-f="recur-md" aria-label="${esc(t('rc.md'))}">${Array.from({length:31}, (_,k)=>`<option value="${k+1}"${r.md === k+1 ? ' selected' : ''}>${esc(t('rc.dayN', {n:k+1}))}</option>`).join('')}</select>` : ''}
+    ${r ? `<span class="rc-next">${I.repeat}${esc(t('rc.next', {date:fmtDay(r.next)}))}</span>` : ''}</div>`;
+}
+// new rule from the task: the weekday / day of month comes from the task's start date
+function recurFrom(i, every){
+  if (!RECUR.includes(every)) return null;
+  const base = isISO(i.start) ? i.start : today(), dt = new Date(base+'T12:00');
+  const r = {every, wd:dt.getDay(), md:dt.getDate()};
+  r.next = recurFirst(r, base > today() ? base : today());
+  return normRecur(r);
+}
+
 function normIssue(id, d){
   const now = Date.now();
   const o = {id, boardId:sid(d.boardId), num:Number(d.num)||0, type:sid(d.type), title:String(d.title??''), status:sid(d.status),
@@ -282,6 +369,8 @@ function normIssue(id, d){
     archived:!!d.archived, archivedAt:d.archived?(Number(d.archivedAt)||now):null, created:Number(d.created)||now, updated:Number(d.updated)||now,
     rank:Number.isFinite(d.rank)?d.rank:0};
   if (d.creator && typeof d.creator === 'object') o.creator = normBy(d.creator); // older tasks have none
+  const rc = normRecur(d.recur); if (rc) o.recur = rc;
+  if (typeof d.recurOf === 'string' && d.recurOf) o.recurOf = d.recurOf.slice(0, 120);
   return o;
 }
 const serBoard = b=>{ const {id, ...rest} = b; return rest; };
@@ -385,7 +474,7 @@ function onMeta(m){
   synced.meta = incJson;
   loaded.meta = true; dataArrived(); if (screen === 'app') scheduleRender();
 }
-function dataArrived(){ if (loaded.boards && loaded.issues && loaded.meta){ addTrackerStatuses(); showApp(); scheduleRender(); } }
+function dataArrived(){ if (loaded.boards && loaded.issues && loaded.meta){ addTrackerStatuses(); showApp(); scheduleRender(); setTimeout(runRecurring, 0); } }
 // once per board: boards made before these existed get the two statuses of the task-tracker sheet
 // ("דורש תיקונים", "לא בוצע"). The board is marked (tc), so if it later removes them they stay removed.
 // Kept on the boards, not in the settings doc, so it can never overwrite settings that haven't arrived yet.
@@ -731,6 +820,7 @@ function cardHTML(i){
     ${labels.length ? `<div class="c-labels">${labels.map(l=>`<span class="lbl" data-bidi>${hl(l)}</span>`).join('')}</div>` : ''}
     <div class="c-dates">${i.due ? `<span class="due ${dc}" title="${esc(t('due.title', {date:fmtDay(i.due)}))}">${I.cal}${dc==='over'?esc(t('due.overduePrefix')):''}${esc(dueLabel(i))}</span>` : ''}<span class="age ${age.cls}" title="${esc(age.long)}">${I.clock}<bdi>${esc(age.short)}</bdi></span></div>
     <div class="c-foot">${isAll() ? bAv(boardOf(i),'xs') : ''}${typeIcon(i.type)}<span class="key${done?' done':''}">${hl(key(i))}</span>
+      ${i.recur ? `<span class="meta-n rc-ico" title="${esc(t('rc.cardTip', {rule:recurText(i.recur), date:fmtDay(i.recur.next)}))}">${I.repeat}</span>` : ''}
       ${n ? `<span class="meta-n${d===n?' all':''}" title="${esc(t('card.subtasks', {d, n}))}">${I.sub}<bdi>${d}/${n}</bdi></span>` : ''}
       ${i.comments.length ? `<span class="meta-n" title="${esc(tn('card.comments', i.comments.length))}">${I.comment}${i.comments.length}</span>` : ''}
       ${i.links.length ? `<span class="meta-n" title="${esc(tn('card.links', i.links.length))}">${I.link}${i.links.length}</span>` : ''}
@@ -1288,6 +1378,113 @@ calview.addEventListener('click', e=>{ if (calSuppress){ e.stopPropagation(); e.
   const day = e.target.closest('.cal-day'); if (day && !e.target.closest('button') && isMobile()){ calSel = day.dataset.day; renderCal(); } }, true);
 calview.addEventListener('contextmenu', e=>{ if (e.target.closest('.cal-chip')) e.preventDefault(); });
 
+/* ================= Dashboard (per client, or every client side by side) =================
+   Headline numbers, created-vs-completed per week, open work by status / platform / type / priority,
+   what's overdue and what's due next. Archived tasks count for history (completed, on time, speed). */
+const dashview = $('#dashview');
+const DASH_RANGES = [4, 8, 12, 26];
+function weekStart(isoDay){ const d = new Date(isoDay+'T12:00'); d.setDate(d.getDate() - d.getDay()); return iso(d); }
+const dayOf = ms=>iso(new Date(ms));
+function dashStats(list, weeks){
+  const tday = today(), from = isoAdd(weekStart(tday), -7*(weeks-1)), live = list.filter(i=>!i.archived);
+  const open = live.filter(i=>!isDone(i));
+  const doneIn = list.filter(i=>i.doneAt && dayOf(i.doneAt) >= from);
+  const withDue = doneIn.filter(i=>i.due);
+  const onTime = withDue.filter(i=>dayOf(i.doneAt) <= i.due).length;
+  const spans = doneIn.map(i=>daysBetween(i.start, dayOf(i.doneAt))).filter(n=>n >= 0);
+  return {open, over:open.filter(i=>i.due && i.due < tday), soon:open.filter(i=>i.due && i.due >= tday && i.due <= addDays(7)),
+    done:doneIn.length, onTime:withDue.length ? Math.round(onTime / withDue.length * 100) : null, onTimeN:withDue.length,
+    avg:spans.length ? Math.round(spans.reduce((a, b)=>a + b, 0) / spans.length * 10) / 10 : null,
+    created:list.filter(i=>dayOf(i.created) >= from).length, from};
+}
+const tile = (label, value, sub, cls='')=>`<div class="kpi ${cls}"><span class="kpi-l">${esc(label)}</span><b class="kpi-v">${value}</b>${sub ? `<span class="kpi-s">${sub}</span>` : ''}</div>`;
+function hbars(rows, title, empty){
+  // one series → one colour; the value is written at the end of each bar
+  const max = Math.max(1, ...rows.map(r=>r.n));
+  return `<section class="viz-card"><h3>${esc(title)}</h3>${rows.length ? `<div class="hb">${rows.map(r=>`<div class="hb-row" data-tip="${esc(r.label)}: ${r.n}">
+      <span class="hb-l" data-bidi>${r.ico || ''}${esc(r.label)}</span><span class="hb-track"><span class="hb-bar" style="width:${Math.max(2, r.n / max * 100)}%"></span></span><span class="hb-n">${r.n}</span></div>`).join('')}</div>` : `<p class="muted-p">${esc(empty)}</p>`}</section>`;
+}
+function weekChart(list, weeks){
+  const ws = Array.from({length:weeks}, (_, k)=>isoAdd(weekStart(today()), -7*(weeks-1-k)));
+  const idx = d=>{ const w = weekStart(d); return ws.indexOf(w); };
+  const made = ws.map(()=>0), done = ws.map(()=>0);
+  list.forEach(i=>{ const a = idx(dayOf(i.created)); if (a >= 0) made[a]++; if (i.doneAt){ const c = idx(dayOf(i.doneAt)); if (c >= 0) done[c]++; } });
+  const max = Math.max(1, ...made, ...done), top = max <= 4 ? max : Math.ceil(max / 4) * 4, ticks = [top, top/2, 0].filter((v, k, a)=>a.indexOf(v) === k);
+  const lab = d=>fmtDay(d);
+  return `<section class="viz-card wide"><div class="viz-head"><h3>${esc(t('dash.weekly'))}</h3>
+      <div class="viz-legend"><span><i class="sw s1"></i>${esc(t('dash.created'))}</span><span><i class="sw s2"></i>${esc(t('dash.completed'))}</span></div></div>
+    <div class="wk" style="--n:${weeks}">
+      <div class="wk-grid">${ticks.map(v=>`<span style="bottom:${v / top * 100}%"><em>${Math.round(v)}</em></span>`).join('')}</div>
+      <div class="wk-cols">${ws.map((w, k)=>`<div class="wk-col" data-tip="${esc(t('dash.weekOf', {date:lab(w)}))} · ${esc(t('dash.created'))}: ${made[k]} · ${esc(t('dash.completed'))}: ${done[k]}">
+        <div class="wk-bars"><span class="b s1" style="height:${made[k] / top * 100}%"></span><span class="b s2" style="height:${done[k] / top * 100}%"></span></div>
+        <span class="wk-x">${(weeks - 1 - k) % (weeks <= 8 ? 1 : weeks <= 12 ? 2 : 4) === 0 ? esc(lab(w)) : ''}</span></div>`).join('')}</div>
+    </div></section>`;
+}
+function taskList(list, title, empty, kind){
+  return `<section class="viz-card"><h3>${esc(title)} <span class="sec-meta">${list.length}</span></h3>${list.length ? `<ul class="dl">${list.slice(0, 8).map(i=>`<li><button class="dl-i" data-act="open-issue" data-id="${i.id}">${typeIcon(i.type)}<span class="dl-t" data-bidi>${esc(i.title || t('issue.untitled'))}</span>${isAll() ? `<span class="dl-b" data-bidi>${esc(boardOf(i)?.name || '')}</span>` : ''}<span class="due ${dueClass(i)}">${esc(dueLabel(i))}</span></button></li>`).join('')}</ul>${list.length > 8 ? `<p class="muted-p">${esc(tn('dash.more', list.length - 8))}</p>` : ''}` : `<p class="muted-p">${esc(empty)}</p>`}</section>`;
+}
+function renderDash(){
+  const all = isAll(), b = curBoard();
+  if (!b){ dashview.innerHTML = `<div class="empty-state"><b>${esc(t('empty.noBoards'))}</b></div>`; return; }
+  const weeks = DASH_RANGES.includes(P.dashWeeks) ? P.dashWeeks : 8;
+  const list = S.issues.filter(i=>(all || i.boardId === b.id) && boardOf(i)).filter(matches);
+  const st = dashStats(list, weeks);
+  const byDue = (a, c)=>(a.due || '').localeCompare(c.due || '');
+  const count = (arr, key)=>{ const m = new Map(); arr.forEach(i=>{ const k = key(i); m.set(k, (m.get(k) || 0) + 1); }); return m; };
+  // open work by status: columns in board order (for all boards, merged by name)
+  const cols = []; (all ? S.boards : [b]).forEach(x=>x.columns.forEach(c=>{ if (c.cat !== 'done' && !cols.includes(c.name)) cols.push(c.name); }));
+  const byCol = count(st.open, i=>colOf(i)?.name || '');
+  const statusRows = cols.map(n=>({label:n, n:byCol.get(n) || 0})).filter(r=>r.n);
+  const byPlat = count(st.open, i=>i.color || '');
+  const platRows = [...byPlat].sort((a, c)=>c[1] - a[1]).map(([h, n])=>({label:h ? platLabelOf(h) : t('filter.noPlatform'), n, ico:`<i class="pf-dot${h ? '' : ' none'}"${h ? ` style="--sw:${h}"` : ''}></i>`}));
+  const byType = count(st.open, i=>i.type);
+  const typeRows = S.types.map(x=>({label:x.name, n:byType.get(x.id) || 0, ico:typeSVG(x)})).filter(r=>r.n).sort((a, c)=>c.n - a.n);
+  const byPrio = count(st.open, i=>i.priority);
+  const prioRows = PRIOS.map(p=>({label:prioName(p), n:byPrio.get(p) || 0, ico:prioIcon(p)})).filter(r=>r.n);
+  const rangeSel = `<div class="seg" role="group" aria-label="${esc(t('dash.range'))}">${DASH_RANGES.map(w=>`<button data-act="dash-range" data-w="${w}" aria-pressed="${w === weeks}">${esc(tn('dash.weeks', w))}</button>`).join('')}</div>`;
+  let compare = '';
+  if (all){
+    const rows = S.boards.slice().sort((a, c)=>(a.order ?? 0) - (c.order ?? 0)).map(x=>({b:x, s:dashStats(list.filter(i=>i.boardId === x.id), weeks)}));
+    const maxOpen = Math.max(1, ...rows.map(r=>r.s.open.length));
+    compare = `<section class="viz-card wide"><h3>${esc(t('dash.compare'))}</h3><div class="cmp-wrap"><table class="cmp">
+      <thead><tr><th>${esc(t('x.col.board'))}</th><th>${esc(t('dash.open'))}</th><th>${esc(t('dash.over'))}</th><th>${esc(t('dash.soon'))}</th><th>${esc(t('dash.done'))}</th><th>${esc(t('dash.onTime'))}</th><th>${esc(t('dash.avg'))}</th></tr></thead>
+      <tbody>${rows.map(({b:x, s:q})=>`<tr><td><button class="link-btn cmp-b" data-act="switch-board" data-id="${x.id}">${bAv(x,'xs')}<span data-bidi>${esc(x.name)}</span></button></td>
+        <td><span class="cmp-n"><span class="cmp-bar" style="width:${q.open.length / maxOpen * 100}%"></span><b>${q.open.length}</b></span></td>
+        <td class="${q.over.length ? 'is-over' : ''}">${q.over.length ? `${I.clock}${q.over.length}` : '0'}</td><td>${q.soon.length}</td><td>${q.done}</td>
+        <td>${q.onTime == null ? '—' : q.onTime + '%'}</td><td>${q.avg == null ? '—' : esc(tn('dash.days', q.avg))}</td></tr>`).join('')}</tbody></table></div></section>`;
+  }
+  dashview.innerHTML = `<div class="dash-bar"><span class="dash-scope">${esc(t('dash.period', {date:fmtDay(st.from)}))}</span>${rangeSel}</div>
+    <div class="kpis">
+      ${tile(t('dash.open'), st.open.length)}
+      ${tile(t('dash.over'), st.over.length, st.over.length ? esc(t('dash.overSub')) : '', st.over.length ? 'bad' : '')}
+      ${tile(t('dash.soon'), st.soon.length)}
+      ${tile(t('dash.done'), st.done, esc(tn('dash.createdN', st.created)))}
+      ${tile(t('dash.onTime'), st.onTime == null ? '—' : st.onTime + '%', st.onTimeN ? esc(tn('dash.ofDue', st.onTimeN)) : esc(t('dash.noDue')))}
+      ${tile(t('dash.avg'), st.avg == null ? '—' : esc(String(st.avg)), st.avg == null ? '' : esc(t('dash.daysUnit')))}
+    </div>
+    <div class="viz-grid">
+      ${weekChart(list, weeks)}
+      ${compare}
+      ${taskList(st.over.slice().sort(byDue), t('dash.overList'), t('dash.overNone'))}
+      ${taskList(st.soon.slice().sort(byDue), t('dash.soonList'), t('dash.soonNone'))}
+      ${hbars(statusRows, t('dash.byStatus'), t('dash.noOpen'))}
+      ${hbars(platRows, t('dash.byPlat'), t('dash.noOpen'))}
+      ${hbars(typeRows, t('dash.byType'), t('dash.noOpen'))}
+      ${hbars(prioRows, t('dash.byPrio'), t('dash.noOpen'))}
+    </div>`;
+}
+// hover / tap tooltip for the charts
+const vizTip = document.createElement('div'); vizTip.className = 'viz-tip'; vizTip.hidden = true; document.body.appendChild(vizTip);
+dashview.addEventListener('pointermove', e=>{
+  const el = e.target.closest('[data-tip]'); if (!el){ vizTip.hidden = true; return; }
+  vizTip.textContent = el.dataset.tip; vizTip.hidden = false;
+  const w = vizTip.offsetWidth, h = vizTip.offsetHeight;
+  vizTip.style.left = Math.max(8, Math.min(innerWidth - w - 8, e.clientX - w / 2)) + 'px';
+  vizTip.style.top = Math.max(8, e.clientY - h - 14) + 'px';
+});
+dashview.addEventListener('pointerleave', ()=>{ vizTip.hidden = true; });
+addEventListener('scroll', ()=>{ vizTip.hidden = true; }, true);
+
 function renderSide(){
   const all = isAll(), b = curBoard(), edit = canEdit();
   const openCount = id=>S.issues.filter(i=>(id===ALL || i.boardId===id) && !i.archived && !isDone(i)).length || '';
@@ -1335,12 +1532,12 @@ function renderBell(){
 function render(){
   if (screen !== 'app') return;
   const v = P.view, all = isAll(), b = curBoard(), name = all ? t('nav.allBoards') : (b?.name || ws?.name || '');
-  board.hidden = v !== 'board'; listview.hidden = v !== 'list' && v !== 'archive'; sheetview.hidden = v !== 'table'; calview.hidden = v !== 'cal';
-  const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : v === 'table' ? t('view.tableOf', {name}) : v === 'cal' ? t('view.calOf', {name}) : name;
+  board.hidden = v !== 'board'; listview.hidden = v !== 'list' && v !== 'archive'; sheetview.hidden = v !== 'table'; calview.hidden = v !== 'cal'; dashview.hidden = v !== 'dash';
+  const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : v === 'table' ? t('view.tableOf', {name}) : v === 'cal' ? t('view.calOf', {name}) : v === 'dash' ? t('view.dashOf', {name}) : name;
   $('#viewTitle').innerHTML = `${!all && b && isImg(b.logo) ? `<span class="h1-logo"><img src="${esc(b.logo)}" alt=""></span>` : ''}<span data-bidi>${esc(title)}</span>`;
   $$('.side-item[data-view]').forEach(x=>x.classList.toggle('on', x.dataset.view===v));
   if (typeFilter && !S.types.some(x=>x.id===typeFilter)) typeFilter = null;
-  if (v === 'board') renderBoard(); else if (v === 'table') renderSheet(); else if (v === 'cal') renderCal(); else renderList(v === 'archive');
+  if (v === 'board') renderBoard(); else if (v === 'table') renderSheet(); else if (v === 'cal') renderCal(); else if (v === 'dash') renderDash(); else renderList(v === 'archive');
   renderSide();
   const pool = scopeIssues(), open = pool.filter(i=>!isDone(i)), tday = today();
   const over = open.filter(i=>i.due && i.due < tday).length;
@@ -1784,6 +1981,7 @@ function issueHTML(i){
           <dt>${esc(t('f.company'))}</dt><dd><div class="labels-edit${edit?'':' ro'}">${i.labels.map(l=>`<span class="chip" data-bidi>${esc(l)}${edit?`<button data-act="label-del" data-l="${esc(l)}" aria-label="${esc(t('company.remove', {name:l}))}">${I.x}</button>`:''}</span>`).join('')}${edit ? `<input class="lbl-in" data-k="lbl" data-bidi placeholder="${i.labels.length?'':esc(t('company.add'))}" list="lblList" aria-label="${esc(t('company.add'))}" autocomplete="off">` : (i.labels.length ? '' : `<span class="t-muted">${esc(t('none'))}</span>`)}</div>
             <datalist id="lblList">${companies.map(l=>`<option value="${esc(l)}">`).join('')}</datalist></dd>
           <dt class="full">${esc(t('f.platform'))}</dt><dd class="full">${edit ? platformPicker('set-color', i.color) : (i.color ? `<span class="plat-b on" style="--sw:${i.color}"><i></i>${esc(colorName(i.color))}</span>` : `<span class="t-muted">${esc(t('plat.none'))}</span>`)}</dd>
+          <dt>${esc(t('f.recur'))}</dt><dd class="rc-dd">${recurField(i, edit)}</dd>
           <dt>${esc(t('f.points'))}</dt><dd>${edit ? `<input class="ctl" type="number" min="0" step="0.5" inputmode="decimal" data-f="points" value="${i.points??''}" placeholder="${esc(t('none'))}" aria-label="${esc(t('f.points'))}">` : `<span class="ro-val${i.points==null?' t-muted':''}">${esc(i.points ?? t('none'))}</span>`}</dd>
           ${S.boards.length > 1 && edit ? `<dt>${esc(t('f.board'))}</dt><dd><select class="ctl" data-f="board" aria-label="${esc(t('f.board'))}">${S.boards.map(x=>`<option value="${x.id}"${x.id===i.boardId?' selected':''}>${esc(x.name)}</option>`).join('')}</select></dd>` : ''}
         </dl>
@@ -1860,6 +2058,7 @@ function openCreate(status, opts={}){
       <div class="grid3">
         <label class="fld">${esc(t('f.start'))}<input type="date" name="start" value="${today()}"></label>
         <label class="fld">${esc(t('f.due'))}<input type="date" name="due" value="${isISO(opts.due) ? opts.due : ''}"></label>
+        <label class="fld">${esc(t('f.recur'))}<select name="recur">${['', ...RECUR].map(v=>`<option value="${v}">${esc(t('rc.opt.' + (v || 'none')))}</option>`).join('')}</select></label>
         <label class="fld">${esc(t('f.points'))}<input type="number" name="points" min="0" step="0.5" inputmode="decimal" placeholder="${esc(t('none'))}"></label>
       </div>
       <label class="fld">${esc(t('f.company'))}<input name="labels" data-bidi list="lblList2" value="${esc(normLabel(b.name))}" placeholder="${esc(t('company.commaPh'))}" autocomplete="off"><datalist id="lblList2">${companies.map(l=>`<option value="${esc(l)}">`).join('')}</datalist></label>
@@ -1880,9 +2079,11 @@ function submitCreate(form){
   const d = {title, boardId:f.get('board'), type:f.get('type'), status:f.get('status'), priority:f.get('priority'), due:isISO(f.get('due')) ? f.get('due') : '', start,
     points: pts === '' || isNaN(Number(pts)) ? null : Number(pts), desc:String(f.get('desc')||'').trim(), color:isHex(f.get('color')) ? f.get('color') : null,
     labels:[...new Set(String(f.get('labels')||'').split(',').map(normLabel).filter(Boolean))]};
+  const recurPick = String(f.get('recur') || '');
   const go = ()=>{
     if (wsId !== ws0 || !canEdit()) return;
     const i = createIssue(d);
+    if (recurPick){ i.recur = recurFrom(i, recurPick); i.recurOf = i.id; touch(i, t('h.recur', {rule:recurText(i.recur)})); save(); render(); }
     lastCreateType = i.type; P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = i.boardId; savePrefs();
     const onOther = !isAll() && i.boardId !== curBoard()?.id;
     const view = ()=>{ if (!isAll() && i.boardId !== curBoard()?.id) switchBoard(i.boardId); openIssue(i.id); };
@@ -2176,7 +2377,7 @@ async function sendRequest(form){
 
 /* ----- Shortcuts ----- */
 function openShortcuts(){
-  const k = [['C','sc.create'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['T','sc.table'],['K','sc.cal'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
+  const k = [['C','sc.create'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['T','sc.table'],['K','sc.cal'],['D','sc.dash'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
   showModal(`${head(t('sc.title'))}<dl class="kbd-list">${k.map(([a,b])=>`<dt dir="ltr">${a.split(' ').map(x=>x==='+'?' + ':`<kbd>${x}</kbd>`).join('')}</dt><dd>${esc(t(b))}</dd>`).join('')}</dl>`, 'help', 'tiny');
 }
 
@@ -2261,6 +2462,17 @@ layer.addEventListener('change', e=>{
     save(); render();
     if (live) patchIssueDates(i); else refreshIssue();
     return;
+  }
+  else if (f === 'recur' || f === 'recur-wd' || f === 'recur-md'){
+    if (f === 'recur'){
+      if (!el.value){ delete i.recur; touch(i, t('h.recurOff')); }
+      else { i.recur = recurFrom(i, el.value); i.recurOf = i.recurOf || i.id; touch(i, t('h.recur', {rule:recurText(i.recur)})); }
+    } else if (i.recur){
+      const r = {...i.recur, [f === 'recur-wd' ? 'wd' : 'md']:Number(el.value)};
+      r.next = recurFirst(r, (isISO(i.start) && i.start > today()) ? i.start : today());
+      i.recur = normRecur(r); touch(i, t('h.recur', {rule:recurText(i.recur)}));
+    }
+    save(); render(); refreshIssue(); runRecurring(); return;
   }
   else if (f === 'points'){ const v = el.value.trim(); i.points = v === '' || isNaN(Number(v)) ? null : Number(v); touch(i, i.points == null ? t('h.pointsNone') : t('h.points', {n:i.points})); }
   else if (f === 'board'){ moveToBoard(i, el.value); return; }
@@ -2469,6 +2681,7 @@ document.addEventListener('click', async e=>{
     case 'status-menu': openPop(b, statusMenu(i, false), i.id); break;
     case 's-menu': if (i) openPop(b, sheetMenu(i, b.dataset.sf), i.id); break;
     case 'cal-ics': exportIcs(); break;
+    case 'dash-range': P.dashWeeks = Number(b.dataset.w) || 8; savePrefs(); renderDash(); break;
     case 'cal-today': calAnchor = today(); calSel = today(); renderCal(); break;
     case 'cal-step': { const r = calRange(), n = Number(b.dataset.n) || 0, a = new Date((calAnchor || today())+'T12:00');
       if (r.mode === 'week') a.setDate(a.getDate() + 7*n); else { a.setDate(1); a.setMonth(a.getMonth() + n); }
@@ -2644,6 +2857,7 @@ document.addEventListener('keydown', e=>{
   else if (k === 'l' || code === 'KeyL'){ P.view = 'list'; savePrefs(); render(); }
   else if (k === 't' || code === 'KeyT'){ P.view = 'table'; savePrefs(); render(); }
   else if (k === 'k' || code === 'KeyK'){ P.view = 'cal'; savePrefs(); render(); }
+  else if (k === 'd' || code === 'KeyD'){ P.view = 'dash'; savePrefs(); render(); }
   else if (k === 'a' || code === 'KeyA'){ if (S.boards.length) switchBoard(ALL); }
   else if (e.key === '?'){ openShortcuts(); }
 });
@@ -3102,7 +3316,7 @@ function relocalize(){
 
 /* ================= Init ================= */
 $$('[data-i]').forEach(el=>el.insertAdjacentHTML('afterbegin', I[el.dataset.i]));
-if (!['board','list','table','cal','archive'].includes(P.view)) P.view = 'board';
+if (!['board','list','table','cal','dash','archive'].includes(P.view)) P.view = 'board';
 setLang(getLang()); staticText(); setTheme(null); applyShell();
 renderLoading();
 setInterval(()=>{ if (screen === 'app' && !drag && !modalKind && !composer && !popAnchor) render(); }, 60000);

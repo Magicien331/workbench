@@ -1157,3 +1157,84 @@ button.chip.plain:hover,button.chip.plat:hover{background:var(--hover);filter:no
   .det dt{line-height:20px;margin-top:8px}
   .det dt:first-of-type{margin-top:0}
 }
+
+/* recurring tasks */
+.rc-dd{flex-wrap:wrap}
+.rc-edit{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;width:100%}
+.rc-edit select.ctl{min-width:0;flex:1 1 120px}
+.rc-next{display:inline-flex;align-items:center;gap:4px;flex-basis:100%;font-size:12px;color:var(--text-subtlest)}
+.rc-next .i{width:13px;height:13px}
+.rc-ico .i{width:14px;height:14px;color:var(--brand-text)}
+
+/* ---------- Dashboard ---------- */
+:root{--viz-1:#2a78d6;--viz-2:#eb6834;--viz-grid:rgba(9,30,66,.09)}
+[data-theme="dark"]{--viz-1:#3987e5;--viz-2:#d95926;--viz-grid:rgba(166,197,226,.12)}
+.dashview{flex:1;min-height:0;overflow-y:auto;padding:0 32px 32px}
+.dash-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 12px}
+.dash-scope{font-size:13px;color:var(--text-subtlest)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px}
+.kpi{display:flex;flex-direction:column;gap:2px;padding:12px 14px;border-radius:var(--r-col);background:var(--raised);box-shadow:var(--shadow-raised),inset 0 0 0 1px var(--border)}
+.kpi-l{font-size:12px;font-weight:600;color:var(--text-sub)}
+.kpi-v{font-size:28px;line-height:34px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.kpi-s{font-size:12px;color:var(--text-subtlest)}
+.kpi.bad .kpi-v{color:var(--danger-text)}
+.kpi.bad{box-shadow:var(--shadow-raised),inset 0 0 0 1px var(--danger-bg),inset 3px 0 0 var(--danger)}
+[dir="rtl"] .kpi.bad{box-shadow:var(--shadow-raised),inset 0 0 0 1px var(--danger-bg),inset -3px 0 0 var(--danger)}
+.viz-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
+.dashview > *{max-width:1800px}
+.viz-card{min-width:0;padding:14px 16px;border-radius:var(--r-col);background:var(--raised);box-shadow:var(--shadow-raised),inset 0 0 0 1px var(--border)}
+.viz-card.wide{grid-column:1 / -1}
+.viz-card h3{margin:0 0 10px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:6px}
+.viz-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.viz-head h3{margin:0}
+.viz-legend{display:flex;gap:14px;font-size:12px;color:var(--text-sub)}
+.viz-legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+.sw.s1,.b.s1{background:var(--viz-1)} .sw.s2,.b.s2{background:var(--viz-2)}
+/* weekly grouped bars */
+.wk{position:relative;height:200px;padding-inline-start:28px;margin-top:6px}
+.wk-grid{position:absolute;inset:0 0 22px 0;inset-inline-start:28px;pointer-events:none}
+.wk-grid span{position:absolute;inset-inline:0;border-top:1px solid var(--viz-grid)}
+.wk-grid em{position:absolute;inset-inline-start:-28px;top:-8px;width:22px;text-align:end;font-style:normal;font-size:11px;color:var(--text-subtlest);font-variant-numeric:tabular-nums}
+.wk-cols{position:absolute;inset:0;inset-inline-start:28px;display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr))}
+.wk-col{display:flex;flex-direction:column;align-items:center;min-width:0;cursor:default;border-radius:6px}
+.wk-col:hover{background:var(--hover)}
+.wk-bars{flex:1;width:100%;display:flex;align-items:flex-end;justify-content:center;gap:2px;padding:0 12%}
+.wk-bars .b{flex:1;max-width:22px;min-height:0;border-radius:4px 4px 0 0}
+.wk-x{height:22px;line-height:22px;font-size:11px;color:var(--text-subtlest);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+/* horizontal bars */
+.hb{display:flex;flex-direction:column;gap:8px}
+.hb-row{display:grid;grid-template-columns:minmax(80px,38%) 1fr 34px;align-items:center;gap:8px;font-size:13px;border-radius:6px}
+.hb-row:hover{background:var(--hover)}
+.hb-l{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.hb-l svg{flex:none}
+.hb-track{height:10px;border-radius:4px;background:color-mix(in srgb, var(--viz-grid) 70%, transparent);overflow:hidden}
+.hb-bar{display:block;height:100%;border-radius:4px;background:var(--viz-1)}
+.hb-n{text-align:end;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text-sub)}
+/* lists */
+.dl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.dl-i{display:flex;align-items:center;gap:8px;width:100%;padding:6px 4px;border:0;border-radius:6px;background:none;color:var(--text);font-size:13px;text-align:start;cursor:pointer}
+.dl-i:hover{background:var(--hover)}
+.dl-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dl-b{font-size:12px;color:var(--text-subtlest);white-space:nowrap}
+/* clients side by side */
+.cmp-wrap{overflow-x:auto}
+.cmp{width:100%;border-collapse:collapse;font-size:13px}
+.cmp th{font-size:12px;font-weight:600;color:var(--text-sub);text-align:start;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+.cmp td{padding:8px;border-bottom:1px solid var(--border);white-space:nowrap;font-variant-numeric:tabular-nums}
+.cmp tr:last-child td{border-bottom:0}
+.cmp-b{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.cmp-n{display:flex;align-items:center;gap:8px;min-width:110px}
+.cmp-bar{display:block;height:8px;border-radius:4px;background:var(--viz-1);max-width:80px;flex:none}
+.cmp td.is-over{color:var(--danger-text);font-weight:600}
+.cmp td.is-over .i{width:13px;height:13px;vertical-align:-2px;margin-inline-end:3px}
+.viz-tip{position:fixed;z-index:950;pointer-events:none;max-width:260px;padding:6px 10px;border-radius:8px;background:var(--text);color:var(--bg);font-size:12px;font-weight:500;box-shadow:var(--shadow-overlay)}
+@media (max-width:1024px){ .dashview{padding:0 24px 24px} }
+@media (max-width:760px){
+  .dashview{padding:0 12px 20px}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .kpi{padding:10px 12px}.kpi-v{font-size:24px;line-height:30px}
+  .viz-grid{grid-template-columns:minmax(0,1fr)}
+  .wk{height:170px}
+}
+@media (max-height:520px) and (orientation:landscape){ .main > .dashview{flex:none;overflow:visible} }
