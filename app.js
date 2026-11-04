@@ -1619,7 +1619,7 @@ function closePop(){
   pop.classList.remove('on'); setTimeout(()=>{ if (!popAnchor) pop.hidden = true; }, 150);
 }
 document.addEventListener('pointerdown', e=>{ if (popAnchor && !pop.contains(e.target) && !popAnchor.contains(e.target)) closePop(); });
-addEventListener('resize', ()=>closePop());
+addEventListener('resize', ()=>{ closePop(); if (!sideOverlay()) shell.classList.remove('side-open'); }); // the drawer only exists on narrow screens
 pop.addEventListener('keydown', e=>{
   const items = $$('.menu-i, .plat-b, .sw, .glyph-btn',pop), ix = items.indexOf(document.activeElement);
   const nextKey = rtl() ? 'ArrowLeft' : 'ArrowRight', prevKey = rtl() ? 'ArrowRight' : 'ArrowLeft';

@@ -627,7 +627,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:24px
   .search,.search:focus-within{width:180px;flex:none}
   .search input{font-size:16px}
   .board{padding:0 16px 16px;scroll-snap-type:x mandatory;gap:10px}
-  .col{flex:0 0 84vw;max-width:none;min-width:0;scroll-snap-align:center}
+  .col{flex:0 0 min(84vw, 360px);max-width:none;min-width:0;scroll-snap-align:center} /* phones: one column; split-screen iPad: two */
   .listview{padding:0 0 16px}
   .tbl .hide-m{display:none}
   .tbl .t-sum{min-width:0}
@@ -1147,3 +1147,13 @@ button.chip.plain:hover,button.chip.plat:hover{background:var(--hover);filter:no
 .sf-n{font-size:12px;color:var(--text-subtlest);font-variant-numeric:tabular-nums}
 .sf-text{min-width:240px}
 .sf-text .inp{width:100%}
+
+/* ---------- very wide and very small screens ---------- */
+@media (min-width:2200px){ .col{max-width:440px} }
+@media (min-width:3000px){ .col{max-width:520px} }
+@media (max-height:820px) and (min-width:761px){ .cal-days{grid-template-rows:repeat(var(--weeks),minmax(78px,1fr))} }
+@media (max-width:360px){
+  .det{grid-template-columns:minmax(0,1fr);gap:2px 0}
+  .det dt{line-height:20px;margin-top:8px}
+  .det dt:first-of-type{margin-top:0}
+}
