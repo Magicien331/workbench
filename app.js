@@ -153,6 +153,8 @@ const I = {
   cal:ic('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'),
   repeat:ic('<path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/>'),
   chart:ic('<path d="M4 20V10M10 20V4M16 20v-7M21 20H3"/>'),
+  sliders:ic('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
+  eyeOff:ic('<path d="M3 3l18 18M10.6 6.1A8.8 8.8 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-2.9 3.5M6.6 6.7C4 8.4 2.5 12 2.5 12S6 18 12 18c1.7 0 3.2-.4 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'),
   sub:ic('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/><path d="M7.5 11v4.5A1.5 1.5 0 0 0 9 17h4"/>'),
   comment:ic('<path d="M5 5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>'),
   menu:ic('<path d="M4 7h16M4 12h16M4 17h16"/>'),
@@ -1379,12 +1381,22 @@ calview.addEventListener('click', e=>{ if (calSuppress){ e.stopPropagation(); e.
 calview.addEventListener('contextmenu', e=>{ if (e.target.closest('.cal-chip')) e.preventDefault(); });
 
 /* ================= Dashboard (per client, or every client side by side) =================
-   Headline numbers, created-vs-completed per week, open work by status / platform / type / priority,
-   what's overdue and what's due next. Archived tasks count for history (completed, on time, speed). */
+   A set of widgets, each of which can be switched off (P.dashHide). The layout adapts to what is shown:
+   cards flow in rows and stretch to fill them, and with only a few charts on screen the charts get taller.
+   Archived tasks count for history (completed, on time, speed). */
 const dashview = $('#dashview');
 const DASH_RANGES = [4, 8, 12, 26];
+// order = order on screen. kind: 'kpi' (the number tiles), 'half' (a time chart), 'wide' (full row), '' (a regular card)
+const DASH_W = [
+  {id:'kpis', kind:'kpi'}, {id:'weekly', kind:'half'}, {id:'backlog', kind:'half'},
+  {id:'clients', all:true}, {id:'compare', kind:'wide', all:true},
+  {id:'deadlines'}, {id:'cycle'}, {id:'weekday'},
+  {id:'over'}, {id:'soon'}, {id:'status'}, {id:'plat'}, {id:'type'}, {id:'prio'}];
+const dashHidden = ()=>new Set(Array.isArray(P.dashHide) ? P.dashHide : []);
 function weekStart(isoDay){ const d = new Date(isoDay+'T12:00'); d.setDate(d.getDate() - d.getDay()); return iso(d); }
 const dayOf = ms=>iso(new Date(ms));
+// when a task stopped being open: finished, or archived without finishing (null = still open)
+const closedAt = i=>i.doneAt || (isDone(i) ? i.updated : null) || (i.archived ? i.archivedAt : null);
 function dashStats(list, weeks){
   const tday = today(), from = isoAdd(weekStart(tday), -7*(weeks-1)), live = list.filter(i=>!i.archived);
   const open = live.filter(i=>!isDone(i));
@@ -1393,85 +1405,181 @@ function dashStats(list, weeks){
   const onTime = withDue.filter(i=>dayOf(i.doneAt) <= i.due).length;
   const spans = doneIn.map(i=>daysBetween(i.start, dayOf(i.doneAt))).filter(n=>n >= 0);
   return {open, over:open.filter(i=>i.due && i.due < tday), soon:open.filter(i=>i.due && i.due >= tday && i.due <= addDays(7)),
-    done:doneIn.length, onTime:withDue.length ? Math.round(onTime / withDue.length * 100) : null, onTimeN:withDue.length,
-    avg:spans.length ? Math.round(spans.reduce((a, b)=>a + b, 0) / spans.length * 10) / 10 : null,
+    doneIn, done:doneIn.length, onTime:withDue.length ? Math.round(onTime / withDue.length * 100) : null, onTimeN:withDue.length,
+    spans, avg:spans.length ? Math.round(spans.reduce((a, b)=>a + b, 0) / spans.length * 10) / 10 : null,
     created:list.filter(i=>dayOf(i.created) >= from).length, from};
 }
+const dashWeeks = weeks=>Array.from({length:weeks}, (_, k)=>isoAdd(weekStart(today()), -7*(weeks-1-k)));
+// a round top for the y axis, so the middle gridline is a whole number too
+const niceTop = max=>max <= 2 ? 2 : max <= 4 ? 4 : Math.ceil(max / 4) * 4;
 const tile = (label, value, sub, cls='')=>`<div class="kpi ${cls}"><span class="kpi-l">${esc(label)}</span><b class="kpi-v">${value}</b>${sub ? `<span class="kpi-s">${sub}</span>` : ''}</div>`;
-function hbars(rows, title, empty){
+const legend = items=>`<div class="viz-legend">${items.map(([cls, label])=>`<span><i class="sw ${cls}"></i>${esc(label)}</span>`).join('')}</div>`;
+function card(w, title, body, o={}){
+  return `<section class="viz-card${w.kind ? ' ' + w.kind : ''}" data-w="${w.id}"><div class="viz-head"><h3>${esc(title)}${o.meta != null ? ` <span class="sec-meta">${o.meta}</span>` : ''}</h3>${o.legend || ''}
+    <button class="btn icon subtle sm viz-x" data-act="dash-hide" data-w="${w.id}" aria-label="${esc(t('dash.hideIt', {name:title}))}" title="${esc(t('dash.hide'))}">${I.eyeOff}</button></div>${body}</section>`;
+}
+const yGrid = top=>`<div class="wk-grid">${[top, top/2, 0].map(v=>`<span style="bottom:${v / top * 100}%"><em>${v}</em></span>`).join('')}</div>`;
+// x labels are fitted to the space after drawing: dates thin out (always keeping the current week),
+// categories switch to their short name when the long one doesn't fit
+let xCtx = null;
+function fitX(){
+  $$('.wk', dashview).forEach(wk=>{
+    const xs = $$('.wk-x', wk); if (!xs.length) return;
+    const colW = xs[0].parentElement.getBoundingClientRect().width; if (!colW) return;
+    xCtx ||= document.createElement('canvas').getContext('2d');
+    const cs = getComputedStyle(xs[0]); xCtx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const wOf = s=>xCtx.measureText(s).width;
+    if (xs[0].hasAttribute('data-time')){
+      const need = Math.max(...xs.map(x=>wOf(x.dataset.x))) + 10, n = xs.length;
+      const step = [1,2,3,4,6,8,13,26].find(s=>s * colW >= need) || n;
+      xs.forEach((x, k)=>{ x.textContent = (n - 1 - k) % step === 0 ? x.dataset.x : ''; });
+    } else {
+      const long = Math.max(...xs.map(x=>wOf(x.dataset.x))) + 6 <= colW;
+      xs.forEach(x=>{ x.textContent = long ? x.dataset.x : x.dataset.xs; });
+    }
+  });
+}
+new ResizeObserver(()=>{ if (!dashview.hidden) requestAnimationFrame(fitX); }).observe(dashview);
+function hbars(w, rows, title, empty){
   // one series → one colour; the value is written at the end of each bar
   const max = Math.max(1, ...rows.map(r=>r.n));
-  return `<section class="viz-card"><h3>${esc(title)}</h3>${rows.length ? `<div class="hb">${rows.map(r=>`<div class="hb-row" data-tip="${esc(r.label)}: ${r.n}">
-      <span class="hb-l" data-bidi>${r.ico || ''}${esc(r.label)}</span><span class="hb-track"><span class="hb-bar" style="width:${Math.max(2, r.n / max * 100)}%"></span></span><span class="hb-n">${r.n}</span></div>`).join('')}</div>` : `<p class="muted-p">${esc(empty)}</p>`}</section>`;
+  return card(w, title, rows.length ? `<div class="hb">${rows.map(r=>`<div class="hb-row" data-tip="${esc(r.label)}: ${r.n}">
+      <span class="hb-l" data-bidi>${r.ico || ''}${esc(r.label)}</span><span class="hb-track"><span class="hb-bar" style="width:${Math.max(2, r.n / max * 100)}%"></span></span><span class="hb-n">${r.n}</span></div>`).join('')}</div>` : `<p class="muted-p">${esc(empty)}</p>`);
 }
-function weekChart(list, weeks){
-  const ws = Array.from({length:weeks}, (_, k)=>isoAdd(weekStart(today()), -7*(weeks-1-k)));
-  const idx = d=>{ const w = weekStart(d); return ws.indexOf(w); };
+// vertical bars, one series (a bar may be highlighted with .s2, explained in the legend)
+function colChart(w, title, cols, o={}){
+  const top = niceTop(Math.max(1, ...cols.map(c=>c.n))), n = cols.length;
+  const body = cols.some(c=>c.n) ? `<div class="wk one" style="--n:${n}">${yGrid(top)}
+      <div class="wk-cols">${cols.map(c=>`<div class="wk-col" data-tip="${esc(c.tip || c.label)}: ${c.n}">
+        <div class="wk-bars"><span class="b ${c.cls || 's1'}" style="height:${c.n / top * 100}%"></span></div><span class="wk-x" data-x="${esc(c.label)}" data-xs="${esc(c.short || c.label)}" title="${esc(c.label)}"></span></div>`).join('')}</div></div>`
+    : `<p class="muted-p">${esc(o.empty)}</p>`;
+  return card(w, title, body, {legend:o.legend, meta:o.meta});
+}
+function weekChart(w, list, weeks){
+  const ws = dashWeeks(weeks), idx = d=>ws.indexOf(weekStart(d));
   const made = ws.map(()=>0), done = ws.map(()=>0);
   list.forEach(i=>{ const a = idx(dayOf(i.created)); if (a >= 0) made[a]++; if (i.doneAt){ const c = idx(dayOf(i.doneAt)); if (c >= 0) done[c]++; } });
-  const max = Math.max(1, ...made, ...done), top = max <= 4 ? max : Math.ceil(max / 4) * 4, ticks = [top, top/2, 0].filter((v, k, a)=>a.indexOf(v) === k);
-  const lab = d=>fmtDay(d);
-  return `<section class="viz-card wide"><div class="viz-head"><h3>${esc(t('dash.weekly'))}</h3>
-      <div class="viz-legend"><span><i class="sw s1"></i>${esc(t('dash.created'))}</span><span><i class="sw s2"></i>${esc(t('dash.completed'))}</span></div></div>
-    <div class="wk" style="--n:${weeks}">
-      <div class="wk-grid">${ticks.map(v=>`<span style="bottom:${v / top * 100}%"><em>${Math.round(v)}</em></span>`).join('')}</div>
-      <div class="wk-cols">${ws.map((w, k)=>`<div class="wk-col" data-tip="${esc(t('dash.weekOf', {date:lab(w)}))} · ${esc(t('dash.created'))}: ${made[k]} · ${esc(t('dash.completed'))}: ${done[k]}">
+  const top = niceTop(Math.max(1, ...made, ...done));
+  return card(w, t('dash.weekly'), `<div class="wk" style="--n:${weeks}">${yGrid(top)}
+      <div class="wk-cols">${ws.map((d, k)=>`<div class="wk-col" data-tip="${esc(t('dash.weekOf', {date:fmtDay(d)}))} · ${esc(t('dash.created'))}: ${made[k]} · ${esc(t('dash.completed'))}: ${done[k]}">
         <div class="wk-bars"><span class="b s1" style="height:${made[k] / top * 100}%"></span><span class="b s2" style="height:${done[k] / top * 100}%"></span></div>
-        <span class="wk-x">${(weeks - 1 - k) % (weeks <= 8 ? 1 : weeks <= 12 ? 2 : 4) === 0 ? esc(lab(w)) : ''}</span></div>`).join('')}</div>
-    </div></section>`;
+        <span class="wk-x" data-x="${esc(fmtDay(d))}" data-time></span></div>`).join('')}</div>
+    </div>`, {legend:legend([['s1', t('dash.created')], ['s2', t('dash.completed')]])});
 }
-function taskList(list, title, empty, kind){
-  return `<section class="viz-card"><h3>${esc(title)} <span class="sec-meta">${list.length}</span></h3>${list.length ? `<ul class="dl">${list.slice(0, 8).map(i=>`<li><button class="dl-i" data-act="open-issue" data-id="${i.id}">${typeIcon(i.type)}<span class="dl-t" data-bidi>${esc(i.title || t('issue.untitled'))}</span>${isAll() ? `<span class="dl-b" data-bidi>${esc(boardOf(i)?.name || '')}</span>` : ''}<span class="due ${dueClass(i)}">${esc(dueLabel(i))}</span></button></li>`).join('')}</ul>${list.length > 8 ? `<p class="muted-p">${esc(tn('dash.more', list.length - 8))}</p>` : ''}` : `<p class="muted-p">${esc(empty)}</p>`}</section>`;
+// how many tasks were open (and how many of those overdue) at the end of each week — is the pile growing?
+function backlogChart(w, list, weeks){
+  const ws = dashWeeks(weeks), now = Date.now(), tday = today();
+  const pts = ws.map(d=>{
+    const endDay = isoAdd(d, 6), T = endDay >= tday ? now : new Date(endDay+'T23:59:59').getTime(), dayT = endDay >= tday ? tday : endDay;
+    let open = 0, over = 0;
+    list.forEach(i=>{ if (i.created > T) return; const c = closedAt(i); if (c && c <= T) return; open++; if (i.due && i.due < dayT) over++; });
+    return {d, open, over};
+  });
+  const top = niceTop(Math.max(1, ...pts.map(p=>p.open))), n = ws.length, r = rtl();
+  const x = k=>{ const v = (k + .5) / n * 100; return (r ? 100 - v : v).toFixed(2); };
+  const line = key=>pts.map((p, k)=>`${x(k)},${(100 - p[key] / top * 100).toFixed(2)}`).join(' ');
+  return card(w, t('dash.backlog'), `<div class="wk ln" style="--n:${n}">${yGrid(top)}
+      <svg class="ln-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline class="ln s1" points="${line('open')}" vector-effect="non-scaling-stroke"/><polyline class="ln s2" points="${line('over')}" vector-effect="non-scaling-stroke"/></svg>
+      <div class="wk-cols">${pts.map((p, k)=>`<div class="wk-col" data-tip="${esc(k === n - 1 ? t('dash.now') : t('dash.endOf', {date:fmtDay(isoAdd(p.d, 6))}))} · ${esc(t('dash.open'))}: ${p.open} · ${esc(t('dash.over'))}: ${p.over}">
+        <div class="ln-area"><span class="pt s1" style="bottom:${p.open / top * 100}%"></span><span class="pt s2" style="bottom:${p.over / top * 100}%"></span></div>
+        <span class="wk-x" data-x="${esc(fmtDay(p.d))}" data-time></span></div>`).join('')}</div>
+    </div>`, {legend:legend([['s1', t('dash.open')], ['s2', t('dash.over')]])});
+}
+// open work per client, the overdue part shown separately
+function clientsChart(w, rows){
+  const max = Math.max(1, ...rows.map(r=>r.open)), tday = today();
+  return card(w, t('dash.clients'), rows.some(r=>r.open) ? `<div class="hb">${rows.map(r=>`<div class="hb-row" data-tip="${esc(r.b.name)} · ${esc(t('dash.open'))}: ${r.open} · ${esc(t('dash.over'))}: ${r.over}">
+      <button class="hb-l link-btn" data-act="switch-board" data-id="${r.b.id}" data-bidi>${bAv(r.b, 'xs')}<span>${esc(r.b.name)}</span></button>
+      <span class="hb-track st">${r.open - r.over ? `<span class="hb-bar" style="width:${(r.open - r.over) / max * 100}%"></span>` : ''}${r.over ? `<span class="hb-bar s2" style="width:${r.over / max * 100}%"></span>` : ''}</span><span class="hb-n">${r.open}</span></div>`).join('')}</div>` : `<p class="muted-p">${esc(t('dash.noOpen'))}</p>`,
+    {legend:legend([['s1', t('dash.onTrack')], ['s2', t('dash.over')]])});
+}
+function taskList(w, list, title, empty){
+  return card(w, title, list.length ? `<ul class="dl">${list.slice(0, 8).map(i=>`<li><button class="dl-i" data-act="open-issue" data-id="${i.id}">${typeIcon(i.type)}<span class="dl-t" data-bidi>${esc(i.title || t('issue.untitled'))}</span>${isAll() ? `<span class="dl-b" data-bidi>${esc(boardOf(i)?.name || '')}</span>` : ''}<span class="due ${dueClass(i)}">${esc(dueLabel(i))}</span></button></li>`).join('')}</ul>${list.length > 8 ? `<p class="muted-p">${esc(tn('dash.more', list.length - 8))}</p>` : ''}` : `<p class="muted-p">${esc(empty)}</p>`, {meta:list.length});
+}
+function dashCustomMenu(){
+  const hid = dashHidden(), all = isAll();
+  return `<div class="menu-h">${esc(t('dash.showWhat'))}</div><div class="sf-list dash-pick">${DASH_W.map(w=>{ const on = !hid.has(w.id), off = w.all && !all;
+      return `<button class="menu-i" role="menuitemcheckbox" aria-checked="${on}" data-act="dash-toggle" data-w="${w.id}"${off ? ' aria-describedby="dash-allnote"' : ''}><span class="sf-box${on ? ' on' : ''}">${on ? I.check : ''}</span><span class="sf-l">${esc(t('dash.w.' + w.id))}${off ? `<small class="dash-only">${esc(t('dash.allOnly'))}</small>` : ''}</span></button>`; }).join('')}</div>
+    <div class="menu-sep"></div><div class="dash-pick-f"><button class="link-btn" data-act="dash-showall">${esc(t('dash.showAll'))}</button><button class="link-btn" data-act="dash-hideall">${esc(t('dash.hideAll'))}</button></div>`;
+}
+function dashRefresh(){
+  renderDash();
+  const btn = $('[data-act="dash-custom"]', dashview);
+  if (popAnchor && pop.dataset.id === 'dash' && btn){ popAnchor = btn; btn.setAttribute('aria-expanded', 'true'); const sc = $('.sf-list', pop)?.scrollTop || 0; pop.innerHTML = dashCustomMenu(); $('.sf-list', pop).scrollTop = sc; placePop(); }
 }
 function renderDash(){
   const all = isAll(), b = curBoard();
   if (!b){ dashview.innerHTML = `<div class="empty-state"><b>${esc(t('empty.noBoards'))}</b></div>`; return; }
-  const weeks = DASH_RANGES.includes(P.dashWeeks) ? P.dashWeeks : 8;
+  const weeks = DASH_RANGES.includes(P.dashWeeks) ? P.dashWeeks : 8, hid = dashHidden();
+  const W = DASH_W.filter(w=>!hid.has(w.id) && (!w.all || all)), on = new Set(W.map(w=>w.id));
   const list = S.issues.filter(i=>(all || i.boardId === b.id) && boardOf(i)).filter(matches);
   const st = dashStats(list, weeks);
   const byDue = (a, c)=>(a.due || '').localeCompare(c.due || '');
   const count = (arr, key)=>{ const m = new Map(); arr.forEach(i=>{ const k = key(i); m.set(k, (m.get(k) || 0) + 1); }); return m; };
-  // open work by status: columns in board order (for all boards, merged by name)
-  const cols = []; (all ? S.boards : [b]).forEach(x=>x.columns.forEach(c=>{ if (c.cat !== 'done' && !cols.includes(c.name)) cols.push(c.name); }));
-  const byCol = count(st.open, i=>colOf(i)?.name || '');
-  const statusRows = cols.map(n=>({label:n, n:byCol.get(n) || 0})).filter(r=>r.n);
-  const byPlat = count(st.open, i=>i.color || '');
-  const platRows = [...byPlat].sort((a, c)=>c[1] - a[1]).map(([h, n])=>({label:h ? platLabelOf(h) : t('filter.noPlatform'), n, ico:`<i class="pf-dot${h ? '' : ' none'}"${h ? ` style="--sw:${h}"` : ''}></i>`}));
-  const byType = count(st.open, i=>i.type);
-  const typeRows = S.types.map(x=>({label:x.name, n:byType.get(x.id) || 0, ico:typeSVG(x)})).filter(r=>r.n).sort((a, c)=>c.n - a.n);
-  const byPrio = count(st.open, i=>i.priority);
-  const prioRows = PRIOS.map(p=>({label:prioName(p), n:byPrio.get(p) || 0, ico:prioIcon(p)})).filter(r=>r.n);
+  const boards = ()=>S.boards.slice().sort((a, c)=>(a.order ?? 0) - (c.order ?? 0));
+  const tday = today(), wk0 = weekStart(tday);
+  const make = {
+    weekly:w=>weekChart(w, list, weeks),
+    backlog:w=>backlogChart(w, list, weeks),
+    clients:w=>clientsChart(w, boards().map(x=>{ const o = st.open.filter(i=>i.boardId === x.id); return {b:x, open:o.length, over:o.filter(i=>i.due && i.due < tday).length}; }).sort((a, c)=>c.open - a.open)),
+    compare:w=>{
+      const rows = boards().map(x=>({b:x, s:dashStats(list.filter(i=>i.boardId === x.id), weeks)}));
+      const maxOpen = Math.max(1, ...rows.map(r=>r.s.open.length));
+      return card(w, t('dash.compare'), `<div class="cmp-wrap"><table class="cmp">
+        <thead><tr><th>${esc(t('x.col.board'))}</th><th>${esc(t('dash.open'))}</th><th>${esc(t('dash.over'))}</th><th>${esc(t('dash.soon'))}</th><th>${esc(t('dash.done'))}</th><th>${esc(t('dash.onTime'))}</th><th>${esc(t('dash.avg'))}</th></tr></thead>
+        <tbody>${rows.map(({b:x, s:q})=>`<tr><td><button class="link-btn cmp-b" data-act="switch-board" data-id="${x.id}">${bAv(x,'xs')}<span data-bidi>${esc(x.name)}</span></button></td>
+          <td><span class="cmp-n"><span class="cmp-bar" style="width:${q.open.length / maxOpen * 100}%"></span><b>${q.open.length}</b></span></td>
+          <td class="${q.over.length ? 'is-over' : ''}">${q.over.length ? `${I.clock}${q.over.length}` : '0'}</td><td>${q.soon.length}</td><td>${q.done}</td>
+          <td>${q.onTime == null ? '—' : q.onTime + '%'}</td><td>${q.avg == null ? '—' : esc(tn('dash.days', q.avg))}</td></tr>`).join('')}</tbody></table></div>`);
+    },
+    deadlines:w=>{
+      // open tasks by when they are due: overdue, this week, the next weeks, later, no date
+      const c = [0,0,0,0,0,0,0];
+      st.open.forEach(i=>{ if (!i.due){ c[6]++; return; } if (i.due < tday){ c[0]++; return; } const k = Math.round(daysBetween(wk0, weekStart(i.due)) / 7); c[Math.min(5, 1 + k)]++; });
+      const keys = ['over','thisWeek','nextWeek','in2','in3','later','noDate'];
+      return colChart(w, t('dash.deadlines'), keys.map((k, ix)=>({label:t('dash.dl.' + k), short:t('dash.dls.' + k), n:c[ix], cls:ix === 0 ? 's2' : ix === 6 ? 's0' : 's1'})), {empty:t('dash.noOpen'), meta:st.open.length});
+    },
+    cycle:w=>{
+      // how long finished tasks took, start → done
+      const B = [[1,'d1'],[3,'d3'],[7,'d7'],[14,'d14'],[30,'d30'],[Infinity,'dMore']], c = B.map(()=>0);
+      st.spans.forEach(n=>{ c[B.findIndex(([m])=>n <= m)]++; });
+      return colChart(w, t('dash.cycle'), B.map(([, k], ix)=>({label:t('dash.cy.' + k), short:t('dash.cys.' + k), n:c[ix]})), {empty:t('dash.noneDone'), meta:st.spans.length});
+    },
+    weekday:w=>{
+      const c = [0,0,0,0,0,0,0]; st.doneIn.forEach(i=>{ c[new Date(i.doneAt).getDay()]++; });
+      const f = fmtr('wds', {weekday:'short'}), fn = fmtr('wdn', {weekday:'narrow'}), fl = fmtr('wdl1', {weekday:'long'}), d0 = new Date(2026, 0, 4, 12); // a Sunday
+      return colChart(w, t('dash.weekday'), c.map((n, k)=>{ const d = new Date(d0); d.setDate(d0.getDate() + k); return {label:f.format(d), short:fn.format(d), tip:fl.format(d), n}; }), {empty:t('dash.noneDone'), meta:st.done});
+    },
+    over:w=>taskList(w, st.over.slice().sort(byDue), t('dash.overList'), t('dash.overNone')),
+    soon:w=>taskList(w, st.soon.slice().sort(byDue), t('dash.soonList'), t('dash.soonNone')),
+    status:w=>{ const cols = []; (all ? S.boards : [b]).forEach(x=>x.columns.forEach(c=>{ if (c.cat !== 'done' && !cols.includes(c.name)) cols.push(c.name); }));
+      const by = count(st.open, i=>colOf(i)?.name || ''); return hbars(w, cols.map(n=>({label:n, n:by.get(n) || 0})).filter(r=>r.n), t('dash.byStatus'), t('dash.noOpen')); },
+    plat:w=>{ const by = count(st.open, i=>i.color || '');
+      return hbars(w, [...by].sort((a, c)=>c[1] - a[1]).map(([h, n])=>({label:h ? platLabelOf(h) : t('filter.noPlatform'), n, ico:`<i class="pf-dot${h ? '' : ' none'}"${h ? ` style="--sw:${h}"` : ''}></i>`})), t('dash.byPlat'), t('dash.noOpen')); },
+    type:w=>{ const by = count(st.open, i=>i.type);
+      return hbars(w, S.types.map(x=>({label:x.name, n:by.get(x.id) || 0, ico:typeSVG(x)})).filter(r=>r.n).sort((a, c)=>c.n - a.n), t('dash.byType'), t('dash.noOpen')); },
+    prio:w=>{ const by = count(st.open, i=>i.priority);
+      return hbars(w, PRIOS.map(p=>({label:prioName(p), n:by.get(p) || 0, ico:prioIcon(p)})).filter(r=>r.n), t('dash.byPrio'), t('dash.noOpen')); },
+  };
   const rangeSel = `<div class="seg" role="group" aria-label="${esc(t('dash.range'))}">${DASH_RANGES.map(w=>`<button data-act="dash-range" data-w="${w}" aria-pressed="${w === weeks}">${esc(tn('dash.weeks', w))}</button>`).join('')}</div>`;
-  let compare = '';
-  if (all){
-    const rows = S.boards.slice().sort((a, c)=>(a.order ?? 0) - (c.order ?? 0)).map(x=>({b:x, s:dashStats(list.filter(i=>i.boardId === x.id), weeks)}));
-    const maxOpen = Math.max(1, ...rows.map(r=>r.s.open.length));
-    compare = `<section class="viz-card wide"><h3>${esc(t('dash.compare'))}</h3><div class="cmp-wrap"><table class="cmp">
-      <thead><tr><th>${esc(t('x.col.board'))}</th><th>${esc(t('dash.open'))}</th><th>${esc(t('dash.over'))}</th><th>${esc(t('dash.soon'))}</th><th>${esc(t('dash.done'))}</th><th>${esc(t('dash.onTime'))}</th><th>${esc(t('dash.avg'))}</th></tr></thead>
-      <tbody>${rows.map(({b:x, s:q})=>`<tr><td><button class="link-btn cmp-b" data-act="switch-board" data-id="${x.id}">${bAv(x,'xs')}<span data-bidi>${esc(x.name)}</span></button></td>
-        <td><span class="cmp-n"><span class="cmp-bar" style="width:${q.open.length / maxOpen * 100}%"></span><b>${q.open.length}</b></span></td>
-        <td class="${q.over.length ? 'is-over' : ''}">${q.over.length ? `${I.clock}${q.over.length}` : '0'}</td><td>${q.soon.length}</td><td>${q.done}</td>
-        <td>${q.onTime == null ? '—' : q.onTime + '%'}</td><td>${q.avg == null ? '—' : esc(tn('dash.days', q.avg))}</td></tr>`).join('')}</tbody></table></div></section>`;
-  }
-  dashview.innerHTML = `<div class="dash-bar"><span class="dash-scope">${esc(t('dash.period', {date:fmtDay(st.from)}))}</span>${rangeSel}</div>
-    <div class="kpis">
+  const shownN = W.length, hiddenN = DASH_W.filter(w=>!w.all || all).length - shownN;
+  const custom = `<button class="btn subtle sm dash-cust" data-act="dash-custom" aria-haspopup="true" aria-expanded="false">${I.sliders}<span>${esc(t('dash.custom'))}</span>${hiddenN ? `<span class="dash-hid">${esc(tn('dash.hiddenN', hiddenN))}</span>` : ''}</button>`;
+  const charts = W.filter(w=>w.kind !== 'kpi');
+  // fewer charts on screen → more room for each; two time charts side by side only when both are on
+  const size = charts.length <= 2 ? 'roomy' : charts.length <= 5 ? 'mid' : '';
+  dashview.className = 'dashview' + (size ? ' ' + size : '');
+  dashview.innerHTML = `<div class="dash-bar"><span class="dash-scope">${esc(t('dash.period', {date:fmtDay(st.from)}))}</span><div class="dash-ctl">${custom}${rangeSel}</div></div>
+    ${on.has('kpis') ? `<div class="kpis">
       ${tile(t('dash.open'), st.open.length)}
       ${tile(t('dash.over'), st.over.length, st.over.length ? esc(t('dash.overSub')) : '', st.over.length ? 'bad' : '')}
       ${tile(t('dash.soon'), st.soon.length)}
       ${tile(t('dash.done'), st.done, esc(tn('dash.createdN', st.created)))}
       ${tile(t('dash.onTime'), st.onTime == null ? '—' : st.onTime + '%', st.onTimeN ? esc(tn('dash.ofDue', st.onTimeN)) : esc(t('dash.noDue')))}
       ${tile(t('dash.avg'), st.avg == null ? '—' : esc(String(st.avg)), st.avg == null ? '' : esc(t('dash.daysUnit')))}
-    </div>
-    <div class="viz-grid">
-      ${weekChart(list, weeks)}
-      ${compare}
-      ${taskList(st.over.slice().sort(byDue), t('dash.overList'), t('dash.overNone'))}
-      ${taskList(st.soon.slice().sort(byDue), t('dash.soonList'), t('dash.soonNone'))}
-      ${hbars(statusRows, t('dash.byStatus'), t('dash.noOpen'))}
-      ${hbars(platRows, t('dash.byPlat'), t('dash.noOpen'))}
-      ${hbars(typeRows, t('dash.byType'), t('dash.noOpen'))}
-      ${hbars(prioRows, t('dash.byPrio'), t('dash.noOpen'))}
-    </div>`;
+    </div>` : ''}
+    ${charts.length ? `<div class="viz-grid" data-n="${charts.length}">${charts.map(w=>make[w.id](w.kind === 'half' && !(on.has('weekly') && on.has('backlog')) ? {...w, kind:'wide'} : w)).join('')}</div>`
+      : !on.has('kpis') ? `<div class="empty-state dash-none"><b>${esc(t('dash.allHidden'))}</b><button class="btn primary" data-act="dash-showall">${esc(t('dash.showAll'))}</button></div>` : ''}`;
+  fitX();
 }
 // hover / tap tooltip for the charts
 const vizTip = document.createElement('div'); vizTip.className = 'viz-tip'; vizTip.hidden = true; document.body.appendChild(vizTip);
@@ -2682,6 +2790,11 @@ document.addEventListener('click', async e=>{
     case 's-menu': if (i) openPop(b, sheetMenu(i, b.dataset.sf), i.id); break;
     case 'cal-ics': exportIcs(); break;
     case 'dash-range': P.dashWeeks = Number(b.dataset.w) || 8; savePrefs(); renderDash(); break;
+    case 'dash-custom': openPop(b, dashCustomMenu(), 'dash'); break;
+    case 'dash-toggle': case 'dash-hide': { const h = dashHidden(), w = b.dataset.w; h.has(w) && act === 'dash-toggle' ? h.delete(w) : h.add(w); P.dashHide = [...h]; savePrefs(); dashRefresh();
+      if (act === 'dash-hide') toast(t('dash.hidden', {name:t('dash.w.' + w)}), {action:t('btn.undo'), fn:()=>{ const x = dashHidden(); x.delete(w); P.dashHide = [...x]; savePrefs(); renderDash(); }}); break; }
+    case 'dash-showall': P.dashHide = []; savePrefs(); dashRefresh(); break;
+    case 'dash-hideall': P.dashHide = DASH_W.map(w=>w.id); savePrefs(); dashRefresh(); break;
     case 'cal-today': calAnchor = today(); calSel = today(); renderCal(); break;
     case 'cal-step': { const r = calRange(), n = Number(b.dataset.n) || 0, a = new Date((calAnchor || today())+'T12:00');
       if (r.mode === 'week') a.setDate(a.getDate() + 7*n); else { a.setDate(1); a.setMonth(a.getMonth() + n); }
