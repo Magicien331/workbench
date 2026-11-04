@@ -118,12 +118,17 @@ function normUrl(v){
 function hostOf(u){ try { return new URL(u).hostname.replace(/^www\./,''); } catch(e){ return u; } }
 const initialOf = n=>esc((String(n).trim()[0]||'?').toUpperCase());
 function hue(s){ let h = 0; for (const c of String(s)) h = (h*31 + c.charCodeAt(0)) % 360; return h; }
-const isPhoto = s=>typeof s === 'string' && s.length <= 500 && /^https:\/\/lh[0-9]{1,2}\.googleusercontent\.com\/[A-Za-z0-9_\-\/=.~%]+$/.test(s);
+// Profile photos. Your own photo comes straight from Google sign-in, so any Google image host is fine
+// (this is what worked before). Photos stored on tasks by other people must be on Google's profile-photo
+// hosts (lh3…): other googleusercontent hosts can serve content whose owner sees who loaded it.
+function photoHost(s){ try { const u = new URL(s); return u.protocol === 'https:' ? u.hostname.toLowerCase() : ''; } catch(e){ return ''; } }
+const isOwnPhoto = s=>typeof s === 'string' && s.length <= 2048 && /^[a-z0-9.-]+\.googleusercontent\.com$/.test(photoHost(s));
+const isPhoto = s=>typeof s === 'string' && s.length <= 2048 && /^lh[0-9]{1,2}\.googleusercontent\.com$/.test(photoHost(s));
 function avatar(p, cls=''){
   p = p || {};
   const n = p.name || p.email || '?', parts = String(n).trim().split(/\s+/);
   const ini = esc(((parts[0]||'?')[0] + (parts[1]?.[0]||'')).toUpperCase()), tip = esc(p.name||p.email||''), bg = `hsl(${hue(p.email||n)} 45% 45%)`;
-  if (isPhoto(p.photo)) return `<img class="avatar ${cls}" src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer"${cls === 'xs' ? ' loading="lazy"' : ''} title="${tip}" data-ini="${ini}" data-bg="${bg}">`;
+  if (isPhoto(p.photo) || (user && p.photo && p.photo === user.photo && isOwnPhoto(p.photo))) return `<img class="avatar ${cls}" src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer"${cls === 'xs' ? ' loading="lazy"' : ''} title="${tip}" data-ini="${ini}" data-bg="${bg}">`;
   return `<span class="avatar ${cls}" style="background:${bg}" title="${tip}">${ini}</span>`;
 }
 // a profile photo that fails to load (old link, offline) falls back to initials
