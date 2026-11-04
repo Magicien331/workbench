@@ -1,6 +1,7 @@
 import { createStore, isConfigured } from './store.js';
 import { t, tn, getLang, setLang, locale, _dicts } from './i18n.js';
 import { writeXlsx, readXlsx, isoToSerial, msToSerial, serialToIso, ST, MAX_CELL } from './xlsx.js';
+import { writeTracker, TRACKER } from './tracker.js';
 
 /* ================= Constants ================= */
 const ALL = '*';
@@ -32,7 +33,7 @@ const GLYPHS = {
   heart:'<path d="M8 12.2S3.6 9.6 3.6 6.6A2.2 2.2 0 0 1 8 5.8a2.2 2.2 0 0 1 4.4.8c0 3-4.4 5.6-4.4 5.6z" fill="#fff"/>'
 };
 /* Starting setups. Text follows the language chosen when the workspace is created. */
-const COLS_PPC = ()=>[['todo','todo'],['doing','doing'],['approval','wait'],['live','doing'],['done','done']].map(([k,cat])=>({id:uid(), name:t('tpl.col.'+k), cat}));
+const COLS_PPC = ()=>[['todo','todo'],['doing','doing'],['approval','wait'],['fix','doing'],['live','doing'],['done','done'],['notdone','done']].map(([k,cat])=>({id:uid(), name:t('tpl.col.'+k), cat}));
 const COLS_BASIC = ()=>[['todo','todo'],['doing','doing'],['done','done']].map(([k,cat])=>({id:uid(), name:t('tpl.col.'+k), cat}));
 const TYPES_PPC = ()=>[['brief','#8F7EE7','flag'],['analysis','#2898BD','eye'],['mediaplan','#D97008','ring'],['launch','#22A06B','bolt'],['creative','#E774BB','heart'],['optim','#1D7AFC','up'],['report','#626F86','doc'],['tracking','#E5493A','dot']].map(([id,color,glyph])=>({id, name:t('tpl.type.'+id), color, glyph}));
 const TYPES_BASIC = ()=>[['task','#4BADE8','check'],['story','#63BA3C','bookmark'],['bug','#E5493A','dot']].map(([id,color,glyph])=>({id, name:t('tpl.type.'+id), color, glyph}));
@@ -105,8 +106,10 @@ const isImg = s=>typeof s === 'string' && s.length < 200000 && /^data:image\/(pn
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/, REQ_ID = /^[A-Za-z0-9_@.%+-]{1,200}$/;
 const sid = (v, fallback='')=>{ v = String(v ?? ''); return SAFE_ID.test(v) ? v : fallback; };
 const REQ_STATUS = ['pending','approved','declined'];
+const HEB_LAT = {'א':'A','ב':'B','ג':'G','ד':'D','ה':'H','ו':'V','ז':'Z','ח':'H','ט':'T','י':'Y','כ':'K','ך':'K','ל':'L','מ':'M','ם':'M','נ':'N','ן':'N','ס':'S','ע':'A','פ':'P','ף':'P','צ':'Z','ץ':'Z','ק':'K','ר':'R','ש':'S','ת':'T'};
 function keyFromName(n){
-  const w = n.trim().toUpperCase().replace(/[^A-Z0-9\s]/g,'').split(/\s+/).filter(Boolean);
+  // Hebrew names get a key too (פנים → PNY), by spelling the letters in Latin
+  const w = String(n).trim().replace(/[\u05D0-\u05EA]/g, ch=>HEB_LAT[ch] || '').toUpperCase().replace(/[^A-Z0-9\s]/g,'').split(/\s+/).filter(Boolean);
   if (!w.length) return '';
   return (w.length === 1 ? w[0].slice(0,3) : w.map(x=>x[0]).join('').slice(0,4)).replace(/^[0-9]+/,'');
 }
@@ -261,6 +264,7 @@ const scopeIssues = ()=>{ const b = curBoard(); return S.issues.filter(i=>!i.arc
 function normBoard(id, d){
   return {id, name:String(d.name||'Board'), key:String(d.key||'B').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,10)||'B',
     color:isHex(d.color)?d.color:'#1D7AFC', logo:isImg(d.logo)?d.logo:null, seq:Number(d.seq)||0, order:Number.isFinite(d.order)?d.order:0,
+    ...(d.alias && typeof d.alias === 'string' ? {alias:d.alias.slice(0,100)} : {}), ...(d.tc ? {tc:1} : {}),
     columns:(Array.isArray(d.columns)&&d.columns.length?d.columns:COLS_BASIC()).map(c=>({id:sid(c?.id, 'c'+uid()), name:String(c.name||''), cat:CATS.includes(c.cat)?c.cat:'todo'}))};
 }
 const normBy = b=>b && typeof b === 'object' ? {uid:String(b.uid||''), name:String(b.name||''), email:String(b.email||''), ...(isPhoto(b.photo) ? {photo:b.photo} : {})} : null;
@@ -380,7 +384,26 @@ function onMeta(m){
   synced.meta = incJson;
   loaded.meta = true; dataArrived(); if (screen === 'app') scheduleRender();
 }
-function dataArrived(){ if (loaded.boards && loaded.issues && loaded.meta){ showApp(); scheduleRender(); } }
+function dataArrived(){ if (loaded.boards && loaded.issues && loaded.meta){ addTrackerStatuses(); showApp(); scheduleRender(); } }
+// once per board: boards made before these existed get the two statuses of the task-tracker sheet
+// ("דורש תיקונים", "לא בוצע"). The board is marked (tc), so if it later removes them they stay removed.
+// Kept on the boards, not in the settings doc, so it can never overwrite settings that haven't arrived yet.
+function ensureTrackerCols(b){
+  const has = w=>b.columns.some(c=>loose(c.name) === loose(w) || loose(TRK_COL_OUT[norm(c.name)] || '') === loose(w));
+  let added = false;
+  if (!has('דורש תיקונים')){
+    const c = {id:'c'+uid(), name:t('tpl.col.fix'), cat:'doing'}, wi = b.columns.findIndex(x=>x.cat === 'wait'), di = b.columns.findIndex(x=>x.cat === 'done');
+    b.columns.splice(wi >= 0 ? wi + 1 : di >= 0 ? di : b.columns.length, 0, c); added = true;
+  }
+  if (!has('לא בוצע')){ b.columns.push({id:'c'+uid(), name:t('tpl.col.notdone'), cat:'done'}); added = true; }
+  return added;
+}
+function addTrackerStatuses(){
+  if (!canEdit()) return;
+  const todo = S.boards.filter(b=>!b.tc); if (!todo.length) return;
+  todo.forEach(b=>{ ensureTrackerCols(b); b.tc = 1; });
+  save();
+}
 
 /* ---------- writing ---------- */
 let flushTimer = 0;
@@ -599,7 +622,7 @@ async function createWorkspace(kind){
     let boards = [], issues = [], types;
     if (kind === 'template'){
       const logos = await Promise.all(PPC_CLIENTS.map(([,,,f])=>fetch(`assets/clients/${f}.png`).then(r=>r.ok ? r.blob() : null).then(b=>b && readLogo(b)).catch(()=>null)));
-      boards = PPC_CLIENTS.map(([n,k,c],ix)=>({id:'b-'+uid(), name:n, key:k, color:c, logo:logos[ix] || null, seq:0, order:ix*1000, columns:COLS_PPC()}));
+      boards = PPC_CLIENTS.map(([n,k,c],ix)=>({id:'b-'+uid(), name:n, key:k, color:c, logo:logos[ix] || null, seq:0, order:ix*1000, columns:COLS_PPC(), tc:1}));
       types = TYPES_PPC();
     } else if (kind === 'local'){
       const conv = convertLocal(localImportCandidate()?.raw);
@@ -1883,7 +1906,7 @@ function saveBoard(){
   }
   const cols = d.columns.map(({id,name,cat})=>({id,name,cat}));
   if (d.isNew){
-    S.boards.push({id:d.id, name:d.name, key:d.key, color:d.color, logo:d.logo||null, seq:0, order:undefined, columns:cols});
+    S.boards.push({id:d.id, name:d.name, key:d.key, color:d.color, logo:d.logo||null, seq:0, order:undefined, columns:cols, tc:1});
     P.active[wsId] = d.id; P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = d.id; savePrefs();
     composer = null; save(); closeModal(); render();
     toast(t('toast.boardCreated', {name:d.name}));
@@ -2241,7 +2264,7 @@ function updateComment(ta){
 }
 
 /* ================= Global click actions ================= */
-const EDIT_ACTS = new Set(['cal-add','s-menu','s-set','ap-yes','ap-no','imp-add','imp-replace','new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
+const EDIT_ACTS = new Set(['trk-apply','cal-add','s-menu','s-set','ap-yes','ap-no','imp-add','imp-replace','new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
 document.addEventListener('click', async e=>{
   const b = e.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act;
@@ -2313,6 +2336,8 @@ document.addEventListener('click', async e=>{
     case 'create': openCreate(); break;
     case 'shortcuts': openShortcuts(); break;
     case 'export': exportData(); shell.classList.remove('side-open'); break;
+    case 'export-tracker': exportTracker(); shell.classList.remove('side-open'); break;
+    case 'trk-apply': applyTracker(); break;
     case 'import': $('#importFile').click(); shell.classList.remove('side-open'); break;
 
     /* filters */
@@ -2715,10 +2740,161 @@ async function readBackupFile(f){
   if (f.size > 25e6) throw new Error('too-big');
   if (/\.xlsx$/i.test(f.name) || /spreadsheetml/.test(f.type)){
     const {sheets} = await readXlsx(await f.arrayBuffer());
+    const tr = findTracker(sheets); if (tr) return {tracker:tr};
     return backupFromSheets(sheets);
   }
   return JSON.parse(await f.text());
 }
+/* ================= Task-tracker sheet (Elizabeth's "מעקב משימות") =================
+   Columns: task, priority, client, status, start, due, documents, notes. Clients are boards, statuses are
+   columns. Import adds new rows and updates matching tasks (same client + same task name); export writes
+   the same sheet back. Tasks that are on the site but not in the sheet are left alone. */
+const TRK_HEAD = {title:['משימה','task'], prio:['עדיפות','priority'], client:['לקוח','client','customer'], status:['סטטוס','status'],
+  start:['תאריך התחלה','start','start date'], due:['דד ליין','due','due date','deadline'], docs:['מסמכים','documents','docs'], notes:['הערות','notes']};
+const TRK_PRIO_IN = {'גבוהה':'high', 'בינונית':'medium', 'נמוכה':'low', 'high':'high', 'medium':'medium', 'low':'low'};
+const TRK_PRIO_OUT = {highest:'גבוהה', high:'גבוהה', medium:'בינונית', low:'נמוכה', lowest:'נמוכה'};
+// her status words ⇄ the site's columns. The four basic ones map onto the template columns (or the first
+// column of that kind); the others become columns of their own when a board needs them.
+const TRK_STATUS = {'לא התחיל':'todo', 'בביצוע':'doing', 'ממתין לאישור':'wait', 'בוצע':'done', 'דורש תיקונים':'doing', 'לא בוצע':'done'};
+const TRK_BASIC = new Set(['לא התחיל','בביצוע','ממתין לאישור','בוצע']);
+const TRK_COL_OUT = {'לביצוע':'לא התחיל', 'בעבודה':'בביצוע', 'ממתין לאישור לקוח':'ממתין לאישור', 'הושלם':'בוצע', 'to do':'לא התחיל', 'in progress':'בביצוע', 'client approval':'ממתין לאישור', 'done':'בוצע', 'needs fixes':'דורש תיקונים', 'not done':'לא בוצע'};
+// loose Hebrew match: ignore spaces/punctuation, the vowel letters ו/י and final forms (קניוני עופר = קניון עופר)
+const FINALS = {'ך':'כ','ם':'מ','ן':'נ','ף':'פ','ץ':'צ'};
+const loose = s=>norm(s).replace(/[\s\-–—'"׳״.,_()]/g,'').replace(/[ךםןףץ]/g, ch=>FINALS[ch]).replace(/[וי]/g,'');
+const statusWord = c=>TRK_COL_OUT[norm(c.name)] || c.name;
+function findTracker(sheets){
+  if (sheets.some(s=>s.name === '_data')) return null; // one of our own backups
+  for (const sh of sheets){
+    const head = (sh.rows[0] || []).map(norm), hm = {};
+    for (const [k, names] of Object.entries(TRK_HEAD)){ const ix = head.findIndex(h=>names.includes(h)); if (ix >= 0) hm[k] = ix; }
+    if (hm.title != null && hm.status != null && hm.client != null && (hm.due != null || hm.start != null)) return {sheet:sh, hm};
+  }
+  return null;
+}
+function trkBoard(word){
+  const w = String(word ?? '').trim(); if (!w) return null;
+  return S.boards.find(b=>sameText(b.name, w) || (b.alias && sameText(b.alias, w))) || S.boards.find(b=>loose(b.name) === loose(w) || (b.alias && loose(b.alias) === loose(w))) || null;
+}
+function trkColumn(cols, word){
+  const w = String(word ?? '').trim(); if (!w) return cols[0];
+  const hit = cols.find(c=>sameText(c.name, w)) || cols.find(c=>sameText(statusWord(c), w)) || cols.find(c=>loose(c.name) === loose(w));
+  if (hit) return hit;
+  if (TRK_BASIC.has(w)) return cols.find(c=>c.cat === TRK_STATUS[w]) || null;
+  return null;
+}
+function planTracker({sheet, hm}){
+  const get = (r, k)=>hm[k] == null ? '' : r[hm[k]];
+  const str = (r, k)=>String(get(r, k) ?? '').trim();
+  const newBoards = new Map(), newCols = new Map(), used = new Set(), rows = [];
+  const fallbackBoard = isAll() ? (boardById(P.lastBoard?.[wsId]) || S.boards[0]) : curBoard(), tplCols = COLS_PPC();
+  sheet.rows.slice(1).forEach((r, k)=>{
+    const title = str(r, 'title'); if (!title) return;
+    const cw = str(r, 'client');
+    let b = trkBoard(cw), bKey = b ? b.id : null;
+    if (!b && cw){ bKey = 'new:' + loose(cw); if (!newBoards.has(bKey)) newBoards.set(bKey, cw); }
+    if (!b && !cw){ b = fallbackBoard; bKey = b?.id; }
+    if (!bKey) return;
+    const cols = b ? b.columns : tplCols, sw = str(r, 'status');
+    let col = trkColumn(cols, sw);
+    if (!col && sw){ const ck = bKey + '|' + loose(sw); if (!newCols.has(ck)) newCols.set(ck, {bKey, name:sw, cat:TRK_STATUS[sw] || 'doing'}); }
+    const pw = str(r, 'prio'), prio = TRK_PRIO_IN[norm(pw)] || (pw ? 'medium' : null);
+    const docCell = get(r, 'docs'), docText = String(docCell ?? '').trim(), docUrl = sheet.links?.[`${k+1},${hm.docs}`] || '';
+    const links = []; const seen = new Set();
+    const addL = (url, title)=>{ const u = normUrl(url); if (u && !seen.has(u)){ seen.add(u); links.push({url:u, title:title || ''}); } };
+    if (docUrl) addL(docUrl, docText && !/^https?:\/\//i.test(docText) ? docText.split('\n')[0] : '');
+    for (const m of docText.matchAll(/https?:\/\/[^\s<>"]+/g)) addL(m[0], '');
+    const docNote = docText && !docUrl && !/https?:\/\//i.test(docText) ? docText : '';
+    const row = {k, title, bKey, boardName:b ? b.name : cw, colId:b ? col?.id || null : null, statusWord:sw, prio, start:cellDate(get(r, 'start')), due:cellDate(get(r, 'due')),
+      links, notes:[String(get(r, 'notes') ?? '').trim(), docNote ? `${TRACKER.head[6]}: ${docNote}` : ''].filter(Boolean).join('\n'), alias:b && cw && !sameText(b.name, cw) && !(b.alias && sameText(b.alias, cw)) ? cw : null};
+    // same client + same name = the same task
+    const ex = b ? S.issues.find(i=>!used.has(i.id) && i.boardId === b.id && sameText(i.title, title)) : null;
+    if (ex){ used.add(ex.id); row.id = ex.id; row.changed = trkChanged(ex, row); }
+    rows.push(row);
+  });
+  return {rows, newBoards, newCols, sheetName:sheet.name};
+}
+function trkChanged(i, r){
+  const col = colOf(i);
+  return (r.prio && TRK_PRIO_OUT[i.priority] !== TRK_PRIO_OUT[r.prio]) || (r.colId ? r.colId !== i.status : !!r.statusWord && statusWord(col) !== r.statusWord)
+    || (r.start && r.start !== i.start) || (r.due || '') !== (i.due || '') || (r.notes || '') !== (i.desc || '').trim()
+    || r.links.some(l=>!i.links.some(x=>x.url === l.url));
+}
+let trackerPending = null;
+function openTrackerImport(plan){
+  if (!plan.rows.length) return toast(t('trk.empty'));
+  const add = plan.rows.filter(r=>!r.id).length, upd = plan.rows.filter(r=>r.id && r.changed).length, same = plan.rows.filter(r=>r.id && !r.changed).length;
+  const nb = [...plan.newBoards.values()], nc = [...new Set([...plan.newCols.values()].map(c=>c.name))];
+  const dlg = showModal(`${head(t('trk.title'))}<div class="c-body">
+      <p class="confirm-p">${esc(t('trk.found', {sheet:plan.sheetName, n:plan.rows.length}))}</p>
+      <ul class="trk-sum"><li><b>${add}</b> ${esc(t('trk.new'))}</li><li><b>${upd}</b> ${esc(t('trk.upd'))}</li>${same ? `<li><b>${same}</b> ${esc(t('trk.same'))}</li>` : ''}</ul>
+      ${nb.length ? `<p class="confirm-p">${esc(t('trk.newBoards'))} <b data-bidi>${esc(nb.join(', '))}</b></p>` : ''}
+      ${nc.length ? `<p class="confirm-p">${esc(t('trk.newCols'))} <b data-bidi>${esc(nc.join(', '))}</b></p>` : ''}
+      <p class="confirm-p muted-p">${esc(t('trk.keep'))}</p></div>
+    <div class="m-foot"><span class="sp"></span><button class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button><button class="btn primary" data-act="trk-apply">${esc(t('trk.apply'))}</button></div>`, 'confirm', 'narrow');
+  dlg.setAttribute('aria-label', t('trk.title'));
+  trackerPending = plan;
+}
+function applyTracker(){
+  const plan = trackerPending; trackerPending = null; if (!plan || !canEdit()) return;
+  const boardOfKey = new Map(S.boards.map(b=>[b.id, b]));
+  let order = (S.boards.reduce((m, b)=>Math.max(m, b.order ?? 0), 0)) + 1000;
+  for (const [k, name] of plan.newBoards){
+    let key = keyFromName(name) || 'C', n = 2; const base = key; while (S.boards.some(x=>x.key === key)) key = (base + n++).slice(0, 10);
+    const b = {id:'b-'+uid(), name, key, color:PALETTE[S.boards.length % PALETTE.length][1], logo:null, seq:0, order, columns:COLS_PPC(), tc:1}; order += 1000;
+    S.boards.push(b); boardOfKey.set(k, b);
+  }
+  const colFor = (b, word)=>{
+    let c = trkColumn(b.columns, word); if (c) return c;
+    if (!word) return b.columns[0];
+    c = {id:'c'+uid(), name:word, cat:TRK_STATUS[word] || 'doing'};
+    // a new "done" kind goes last; anything else just before the first done column
+    const di = b.columns.findIndex(x=>x.cat === 'done');
+    if (c.cat === 'done' || di < 0) b.columns.push(c); else b.columns.splice(di, 0, c);
+    return c;
+  };
+  const now = Date.now(); let made = 0, changed = 0;
+  plan.rows.forEach((r, ix)=>{
+    const b = boardOfKey.get(r.bKey); if (!b) return;
+    if (r.alias && !b.alias) b.alias = r.alias;
+    const col = colFor(b, r.statusWord);
+    if (r.id){
+      const i = get(r.id); if (!i || !trkChanged(i, {...r, colId:col.id})) return;
+      if (r.prio && TRK_PRIO_OUT[i.priority] !== TRK_PRIO_OUT[r.prio]) i.priority = r.prio;
+      if (col.id !== i.status){ const was = colOf(i); i.status = col.id; if (col.cat === 'done' && was?.cat !== 'done') i.doneAt = now; if (col.cat !== 'done') i.doneAt = null; }
+      if (r.start) i.start = r.start;
+      i.due = r.due || '';
+      if ((r.notes || '') !== i.desc.trim()) i.desc = r.notes || '';
+      r.links.forEach(l=>{ if (!i.links.some(x=>x.url === l.url)) i.links.push({id:uid(), url:l.url, title:l.title}); });
+      touch(i, t('trk.hist', {sheet:plan.sheetName})); changed++;
+    } else {
+      b.seq = Math.max(b.seq || 0, ...S.issues.filter(x=>x.boardId === b.id).map(x=>x.num)) + 1;
+      const i = normIssue('i-'+uid(), {boardId:b.id, num:b.seq, type:S.types[0]?.id, title:r.title, status:col.id, priority:r.prio || 'medium',
+        start:r.start || today(), due:r.due || '', desc:r.notes || '', labels:[normLabel(b.name)], links:r.links.map(l=>({id:uid(), ...l})),
+        created:now + ix, updated:now, doneAt:col.cat === 'done' ? now : null, creator:me(), history:[{id:uid(), at:now, text:t('trk.histNew', {sheet:plan.sheetName}), by:user.name}]});
+      i.rank = undefined; S.issues.push(i); made++;
+    }
+  });
+  closeModal(); save(); render();
+  toast(t('trk.done', {a:made, u:changed}), {ms:6000});
+}
+// export: every open (not archived) task of the workspace, in the order they were created
+function exportTracker(){
+  flush();
+  const boards = S.boards.slice().sort((a, b)=>(a.order ?? 0) - (b.order ?? 0));
+  const list = S.issues.filter(i=>!i.archived && boardOf(i)).sort((a, b)=>(a.created - b.created) || (a.num - b.num));
+  const rows = list.map(i=>{
+    const b = boardOf(i), c = colOf(i), l = i.links[0];
+    const docs = !i.links.length ? null : i.links.length === 1 ? {text:l.title || l.url, url:l.url} : {text:i.links.map(x=>x.title ? `${x.title} – ${x.url}` : x.url).join('\n'), url:l.url};
+    return {title:i.title, prio:TRK_PRIO_OUT[i.priority] || 'בינונית', client:b.alias || b.name, status:c ? statusWord(c) : '', start:i.start, due:i.due, docs, notes:i.desc};
+  });
+  const clients = boards.map(b=>b.alias || b.name);
+  const statuses = [...new Set([...TRACKER.statuses, ...boards.flatMap(b=>b.columns.map(statusWord))])];
+  const blob = writeTracker({rows, clients, statuses});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `task-tracker-${today()}.xlsx`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 1500);
+  toast(tn('trk.exported', rows.length));
+}
+
 function openImportChoice(conv, raw){
   const dlg = showModal(`${head(t('imp.title'))}<p class="confirm-p">${esc(t('imp.text2', {b:tn('boards', conv.boards.length), i:tn('issues', conv.issues.length)}))}</p>
     ${isOwner() ? `<p class="confirm-p muted-p">${esc(t('imp.replaceHint'))}</p>` : ''}
@@ -2743,7 +2919,7 @@ function applyImport(mode){
     const known = new Set(S.types.map(x=>x.id)), knownNames = new Map(S.types.map(x=>[norm(x.name), x.id]));
     const remap = new Map();
     conv.types.forEach(x=>{ if (known.has(x.id)) return; const same = knownNames.get(norm(x.name)); if (same) remap.set(x.id, same); else S.types.push(x); });
-    S.boards.push(...conv.boards); S.issues.push(...conv.issues.map(i=>({...i, type:remap.get(i.type) || i.type, rank:undefined})));
+    S.boards.push(...conv.boards.map(b=>({...b, tc:1}))); S.issues.push(...conv.issues.map(i=>({...i, type:remap.get(i.type) || i.type, rank:undefined})));
   }
   save(); closeModal(); render(); toast(t('toast.imported', {n:tn('issues', conv.issues.length)}));
 }
@@ -2751,6 +2927,7 @@ $('#importFile').addEventListener('change', async e=>{
   const f = e.target.files[0]; e.target.value = ''; if (!f || !canEdit()) return;
   try {
     const raw = await readBackupFile(f);
+    if (raw.tracker){ openTrackerImport(planTracker(raw.tracker)); return; }
     const conv = convertLocal(raw);
     if (!conv.boards.length) throw new Error('bad');
     openImportChoice(conv, raw);

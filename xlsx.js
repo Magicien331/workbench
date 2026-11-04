@@ -164,6 +164,10 @@ export function writeXlsx(spec){
   return zip(files);
 }
 
+// raw package writer for files we lay out ourselves (e.g. the task-tracker sheet)
+export const zipFiles = files=>zip(files.map(f=>({name:f.name, data:typeof f.data === 'string' ? te.encode(f.data) : f.data})));
+export const xmlText = s=>xesc(s);
+
 /* ---------- reader ---------- */
 const parseXml = bytes=>{ const doc = new DOMParser().parseFromString(td.decode(bytes), 'application/xml'); if (doc.getElementsByTagName('parsererror').length) throw new Error('bad-xml'); return doc; };
 const all = (el, tag)=>[...el.getElementsByTagNameNS('*', tag)];
@@ -182,7 +186,14 @@ export async function readXlsx(buf){
     const rid = s.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || s.getAttribute('r:id');
     let target = rel.get(rid) || ''; target = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
     const bytes = get(target); if (!bytes) continue;
-    const doc = parseXml(bytes), rows = [];
+    const doc = parseXml(bytes), rows = [], links = {};
+    // hyperlinks (e.g. Google Drive file chips in a "documents" column) → links["row,col"] = url
+    const relPath = target.replace(/([^/]+)$/, '_rels/$1.rels'), srel = get(relPath) ? new Map(all(parseXml(get(relPath)), 'Relationship').map(r=>[r.getAttribute('Id'), r.getAttribute('Target')])) : new Map();
+    for (const h of all(doc, 'hyperlink')){
+      const ref = h.getAttribute('ref') || '', id = h.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || h.getAttribute('r:id');
+      const url = id ? srel.get(id) : ''; const m = /^([A-Z]+)(\d+)/.exec(ref);
+      if (url && m) links[`${Number(m[2]) - 1},${colIndex(m[1])}`] = url;
+    }
     let rAuto = 0;
     for (const row of all(doc, 'row')){
       const ri = row.getAttribute('r') ? Number(row.getAttribute('r')) - 1 : rAuto; rAuto = ri + 1;
@@ -196,12 +207,14 @@ export async function readXlsx(buf){
         else if (tp === 'str' || tp === 'e') val = v?.textContent ?? '';
         else if (tp === 'b') val = v?.textContent === '1';
         else if (v) val = Number(v.textContent);
+        const f = [...c.children].find(x=>x.localName === 'f'), hm = f && /HYPERLINK\(\s*"([^"]+)"/i.exec(f.textContent || '');
+        if (hm) links[`${ri},${ci}`] = hm[1];
         if (val !== null && val !== '') out[ci] = val;
       }
       rows[ri] = out;
     }
     for (let i = 0; i < rows.length; i++) if (!rows[i]) rows[i] = [];
-    sheets.push({name:s.getAttribute('name') || '', hidden:(s.getAttribute('state') || 'visible') !== 'visible', rows});
+    sheets.push({name:s.getAttribute('name') || '', hidden:(s.getAttribute('state') || 'visible') !== 'visible', rows, links});
   }
   return {sheets};
 }

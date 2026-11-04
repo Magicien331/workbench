@@ -1117,3 +1117,6 @@ button.chip.plain:hover,button.chip.plat:hover{background:var(--hover);filter:no
   .cal-undated{width:auto;margin-top:12px}
 }
 @media (max-height:520px) and (orientation:landscape){ .calview{flex:none;overflow:visible} .cal-days{grid-template-rows:repeat(var(--weeks),minmax(64px,auto))} }
+
+.trk-sum{margin:4px 0 12px;padding:0 18px;display:flex;flex-direction:column;gap:4px}
+.trk-sum b{font-variant-numeric:tabular-nums}
