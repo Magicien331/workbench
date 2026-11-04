@@ -47,6 +47,7 @@
         <div class="side-h" data-t="side.views"></div>
         <button class="side-item" data-act="view" data-view="board" data-i="board"><span data-t="side.board"></span></button>
         <button class="side-item" data-act="view" data-view="list" data-i="list"><span data-t="side.list"></span></button>
+        <button class="side-item" data-act="view" data-view="table" data-i="table"><span data-t="side.table"></span></button>
         <button class="side-item" data-act="view" data-view="archive" data-i="archive"><span data-t="side.archive"></span></button>
         <div class="side-h" data-t="side.settings"></div>
         <button class="side-item" id="sideSettings" data-act="board-settings" data-i="gear"><span data-t="side.boardSettings"></span></button>
@@ -78,6 +79,7 @@
       </div>
       <div id="board" class="board"></div>
       <div id="listview" class="listview" hidden></div>
+      <div id="sheetview" class="sheetview" hidden></div>
     </main>
   </div>
 </div>
@@ -85,7 +87,7 @@
 <div id="layer"></div>
 <div id="pop" class="pop" role="menu" hidden></div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<input type="file" id="importFile" accept="application/json,.json" hidden>
+<input type="file" id="importFile" accept=".xlsx,.json,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
 <input type="file" id="logoFile" accept="image/*" hidden>
 </body>
 </html>

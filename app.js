@@ -1,5 +1,6 @@
 import { createStore, isConfigured } from './store.js';
-import { t, tn, getLang, setLang, locale } from './i18n.js';
+import { t, tn, getLang, setLang, locale, _dicts } from './i18n.js';
+import { writeXlsx, readXlsx, isoToSerial, msToSerial, serialToIso, ST, MAX_CELL } from './xlsx.js';
 
 /* ================= Constants ================= */
 const ALL = '*';
@@ -60,12 +61,26 @@ const daysBetween = (a,b)=>Math.round((new Date(b+'T12:00') - new Date(a+'T12:00
 const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const lower = s=>String(s||'').trim().toLowerCase();
 const isEmail = s=>/^[a-z0-9._%+-]+@[a-z0-9.-]+[.][a-z]{2,}$/.test(String(s).trim().toLowerCase()); // same pattern as firestore.rules
-function fmtDay(d){
-  const dt = new Date(d+'T00:00'), o = {day:'numeric',month:'short'};
-  if (dt.getFullYear() !== new Date().getFullYear()) o.year = 'numeric';
-  return dt.toLocaleDateString(locale(),o);
+// toLocaleDateString builds a new Intl formatter on every call, which made big boards slow to
+// render (most of a render with ~1000 tasks). Reuse formatters and remember formatted days.
+const fmtCache = new Map(), dayCache = new Map();
+function fmtr(kind, o){
+  const k = locale() + '|' + kind;
+  let f = fmtCache.get(k); if (!f){ f = new Intl.DateTimeFormat(locale(), o); fmtCache.set(k, f); }
+  return f;
 }
-const fmtTime = ts=>new Date(ts).toLocaleString(locale(),{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+function fmtDay(d){
+  const y = new Date().getFullYear(), k = locale() + '|' + y + '|' + d;
+  let out = dayCache.get(k);
+  if (out === undefined){
+    const dt = new Date(d+'T00:00');
+    out = isNaN(dt) ? String(d ?? '') : dt.getFullYear() !== y ? fmtr('dmy', {day:'numeric',month:'short',year:'numeric'}).format(dt) : fmtr('dm', {day:'numeric',month:'short'}).format(dt);
+    if (dayCache.size > 5000) dayCache.clear();
+    dayCache.set(k, out);
+  }
+  return out;
+}
+const fmtTime = ts=>fmtr('time', {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(ts));
 function ago(ts){
   const s = (Date.now()-ts)/1000;
   if (s < 45) return t('ago.now');
@@ -103,13 +118,21 @@ function normUrl(v){
 function hostOf(u){ try { return new URL(u).hostname.replace(/^www\./,''); } catch(e){ return u; } }
 const initialOf = n=>esc((String(n).trim()[0]||'?').toUpperCase());
 function hue(s){ let h = 0; for (const c of String(s)) h = (h*31 + c.charCodeAt(0)) % 360; return h; }
+const isPhoto = s=>typeof s === 'string' && s.length <= 500 && /^https:\/\/lh[3-6]\.googleusercontent\.com\/[A-Za-z0-9_\-\/=.~]+$/.test(s);
 function avatar(p, cls=''){
   p = p || {};
-  if (p.photo && user && p.photo === user.photo && /^https:\/\/[a-z0-9.-]+\.googleusercontent\.com\//i.test(p.photo)) return `<img class="avatar ${cls}" src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer" title="${esc(p.name||p.email||'')}">`;
   const n = p.name || p.email || '?', parts = String(n).trim().split(/\s+/);
-  const ini = esc(((parts[0]||'?')[0] + (parts[1]?.[0]||'')).toUpperCase());
-  return `<span class="avatar ${cls}" style="background:hsl(${hue(p.email||n)} 45% 45%)" title="${esc(p.name||p.email||'')}">${ini}</span>`;
+  const ini = esc(((parts[0]||'?')[0] + (parts[1]?.[0]||'')).toUpperCase()), tip = esc(p.name||p.email||''), bg = `hsl(${hue(p.email||n)} 45% 45%)`;
+  if (isPhoto(p.photo)) return `<img class="avatar ${cls}" src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer" loading="lazy" title="${tip}" data-ini="${ini}" data-bg="${bg}">`;
+  return `<span class="avatar ${cls}" style="background:${bg}" title="${tip}">${ini}</span>`;
 }
+// a profile photo that fails to load (old link, offline) falls back to initials
+document.addEventListener('error', e=>{
+  const im = e.target;
+  if (!(im instanceof HTMLImageElement) || !im.classList.contains('avatar')) return;
+  const sp = document.createElement('span'); sp.className = im.className; sp.title = im.title; sp.style.background = im.dataset.bg || ''; sp.textContent = im.dataset.ini || '?';
+  im.replaceWith(sp);
+}, true);
 
 /* ================= Icons ================= */
 const ic = d=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
@@ -125,11 +148,13 @@ const I = {
   menu:ic('<path d="M4 7h16M4 12h16M4 17h16"/>'),
   board:ic('<rect x="4" y="4" width="4.5" height="16" rx="1"/><rect x="9.75" y="4" width="4.5" height="11" rx="1"/><rect x="15.5" y="4" width="4.5" height="7" rx="1"/>'),
   list:ic('<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>'),
+  table:ic('<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10"/>'),
   down:ic('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
   up:ic('<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>'),
   trash:ic('<path d="M5 7h14M10 11v6M14 11v6M6.5 7l.8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12M9.5 7V4.5h5V7"/>'),
   sun:ic('<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2.5 12h2M19.5 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
   moon:ic('<path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10z"/>'),
+  palette:ic('<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7.2" r="1.2"/><circle cx="14.5" cy="7.2" r="1.2"/>'),
   kbd:ic('<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M7.5 14h9"/>'),
   chev:ic('<path d="M7 10l5 5 5-5"/>'),
   copy:ic('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>'),
@@ -199,7 +224,10 @@ const savePrefs = ()=>{ try { localStorage.setItem(PREF_KEY, JSON.stringify(P));
 let store = null, user = null, wsList = null, wsId = null, ws = null;
 let incoming = [], outgoing = [], mayCreate = true;
 let unsubWs = null, unsubData = null, unsubIn = null, unsubOut = null;
-let S = {boards:[], issues:[], types:[]};
+let S = {boards:[], issues:[], types:[], archive:null};
+// Monthly "archive what's done" prompt: shown from `day` of each month until handled (stored in the workspace settings)
+const normArchive = a=>({on:a?.on !== false, day:Math.min(28, Math.max(1, parseInt(a?.day, 10) || 1)), handled:/^\d{4}-\d{2}$/.test(a?.handled || '') ? a.handled : ''});
+const ym = (d=new Date())=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 let loaded = {boards:false, issues:false, meta:false};
 const synced = {boards:new Map(), issues:new Map(), meta:null};
 let screen = 'loading'; // loading | signin | welcome | app
@@ -208,7 +236,7 @@ let awaitOpen = null;
 const role = ()=>!ws ? null : ws.ownerUid === user?.uid ? 'owner' : (ws.roles||{})[user?.email] || 'viewer';
 const canEdit = ()=>role() === 'owner' || role() === 'editor';
 const isOwner = ()=>role() === 'owner';
-const me = ()=>({uid:user.uid, name:user.name, email:user.email});
+const me = ()=>({uid:user.uid, name:user.name, email:user.email, ...(isPhoto(user.photo) ? {photo:user.photo} : {})});
 
 const get = id=>S.issues.find(i=>i.id===id);
 const activeKey = ()=>P.active[wsId];
@@ -230,7 +258,7 @@ function normBoard(id, d){
     color:isHex(d.color)?d.color:'#1D7AFC', logo:isImg(d.logo)?d.logo:null, seq:Number(d.seq)||0, order:Number.isFinite(d.order)?d.order:0,
     columns:(Array.isArray(d.columns)&&d.columns.length?d.columns:COLS_BASIC()).map(c=>({id:sid(c?.id, 'c'+uid()), name:String(c.name||''), cat:CATS.includes(c.cat)?c.cat:'todo'}))};
 }
-const normBy = b=>b && typeof b === 'object' ? {uid:String(b.uid||''), name:String(b.name||''), email:String(b.email||'')} : null;
+const normBy = b=>b && typeof b === 'object' ? {uid:String(b.uid||''), name:String(b.name||''), email:String(b.email||''), ...(isPhoto(b.photo) ? {photo:b.photo} : {})} : null;
 function normIssue(id, d){
   const now = Date.now();
   const o = {id, boardId:sid(d.boardId), num:Number(d.num)||0, type:sid(d.type), title:String(d.title??''), status:sid(d.status),
@@ -243,11 +271,12 @@ function normIssue(id, d){
     history:Array.isArray(d.history)?d.history.filter(Boolean).slice(0,200).map(h=>({id:sid(h.id, uid()), at:Number(h.at)||now, text:String(h.text||''), by:h.by?String(h.by):''})):[],
     archived:!!d.archived, archivedAt:d.archived?(Number(d.archivedAt)||now):null, created:Number(d.created)||now, updated:Number(d.updated)||now,
     rank:Number.isFinite(d.rank)?d.rank:0};
+  if (d.creator && typeof d.creator === 'object') o.creator = normBy(d.creator); // older tasks have none
   return o;
 }
 const serBoard = b=>{ const {id, ...rest} = b; return rest; };
 const serIssue = i=>{ const {id, ...rest} = i; return rest; };
-const serMeta = ()=>({types:S.types.map(({id,name,color,glyph})=>({id,name,color,glyph}))});
+const serMeta = ()=>({types:S.types.map(({id,name,color,glyph})=>({id,name,color,glyph})), archive:{...(S.archive || normArchive())}});
 
 /* ---------- merging snapshots ---------- */
 // base = the last version of each doc we know the server has. Used for three-way merges,
@@ -340,9 +369,9 @@ function cleanWs(list){
   });
 }
 function onMeta(m){
-  const types = normTypes(m), incJson = stable({types});
+  const types = normTypes(m), archive = normArchive(m?.archive), incJson = stable({types, archive});
   const dirty = synced.meta !== null && stable(serMeta()) !== synced.meta;
-  if (!dirty) S.types = types;
+  if (!dirty){ S.types = types; S.archive = archive; }
   synced.meta = incJson;
   loaded.meta = true; dataArrived(); if (screen === 'app') scheduleRender();
 }
@@ -434,7 +463,7 @@ function showApp(){
 }
 function gateFrame(inner){
   return `<div class="gate-top"><button class="btn subtle" data-act="lang">${I.globe}<span>${getLang()==='he'?'English':'עברית'}</span></button>
-      <button class="btn icon subtle" data-act="theme" aria-label="${esc(t('nav.theme'))}">${effectiveTheme()==='dark'?I.sun:I.moon}</button></div>
+      <button class="btn icon subtle" data-act="theme" aria-label="${esc(t('nav.theme'))}" title="${esc(t('nav.theme'))}" aria-haspopup="menu">${themeIcon()}</button></div>
     <div class="gate-card">
       <div class="gate-brand"><img class="gate-logo brand-ink" src="assets/mccann-valley.png" alt="McCann Valley"><span class="gate-app"><span class="logo">${APP_MARK}</span>Workbench</span></div>
       ${inner}
@@ -542,7 +571,7 @@ function openWorkspace(id, reload){
   flush();
   unsubData?.(); unsubData = null;
   wsId = id; ws = (wsList||[]).find(w=>w.id===id) || null; P.lastWs = id; savePrefs();
-  S = {boards:[], issues:[], types:[]}; synced.boards.clear(); synced.issues.clear(); synced.meta = null; base.boards.clear(); base.issues.clear();
+  S = {boards:[], issues:[], types:[], archive:normArchive()}; synced.boards.clear(); synced.issues.clear(); synced.meta = null; base.boards.clear(); base.issues.clear();
   loaded = {boards:false, issues:false, meta:false}; composer = null; openId = null;
   if (modalKind) closeModal(true);
   if (!reload){ screen = 'loading'; renderLoading(t('gate.opening', {name:ws?.name||''})); }
@@ -641,12 +670,28 @@ function ageInfo(i){
   return {n, short:short(n), long:n === 0 ? t('age.startedToday') : t('age.running', {date:fmtDay(i.start), d:tn('days', n)}), cls:n >= 14 ? 'long' : ''};
 }
 function visibleLabels(i){ return isAll() ? i.labels : i.labels.filter(l=>!sameText(l, boardOf(i).name)); }
+// Short one-paragraph preview of the description for cards (CSS clamps it to 2 lines)
+const cardDesc = s=>{ s = String(s).replace(/\s+/g, ' ').trim(); return s.length > 160 ? s.slice(0, 157).trimEnd() + '…' : s; };
+// Who opened the task. Tasks from before this was saved fall back to the name in their first history line.
+const CREATED_TEXTS = new Set(Object.values(_dicts).map(d=>d['h.created']).filter(Boolean));
+function creatorOf(i){
+  if (i.creator && (i.creator.name || i.creator.email)) return i.creator;
+  const h = i.history[i.history.length-1];
+  return h && h.by && CREATED_TEXTS.has(h.text) ? {name:h.by} : null;
+}
+const isShared = ()=>!!ws && (Object.keys(ws.roles||{}).length > 0 || (ws.memberEmails||[]).length > 1);
+function creatorAv(i){
+  const c = creatorOf(i); if (!c) return '';
+  const nm = c.name || c.email;
+  return `<span class="c-by" title="${esc(t('card.createdBy', {name:nm}))}" aria-label="${esc(t('card.createdBy', {name:nm}))}">${avatar(c,'xs')}</span>`;
+}
 function cardHTML(i){
   const n = i.subtasks.length, d = i.subtasks.filter(s=>s.done).length, dc = dueClass(i), done = isDone(i), age = ageInfo(i), labels = visibleLabels(i);
   const cls = ['card']; if (i.color) cls.push('has-color');
   if (fx.new===i.id) cls.push('is-new'); if (fx.land===i.id) cls.push('is-land'); if (fx.done===i.id) cls.push('is-done-fx');
   return `<article class="${cls.join(' ')}" data-id="${i.id}" tabindex="0"${i.color?` style="--cc:${i.color}" title="${esc(colorName(i.color))}"`:''} aria-label="${esc(key(i)+': '+(i.title||t('issue.untitled')))}">
     <p class="c-title" data-bidi>${hl(i.title || t('issue.untitled'))}</p>
+    ${i.desc.trim() ? `<p class="c-desc" data-bidi>${hl(cardDesc(i.desc))}</p>` : ''}
     <button class="c-menu" data-act="card-menu" data-id="${i.id}" aria-label="${esc(t('card.actions', {key:key(i)}))}" aria-haspopup="menu">${I.more}</button>
     ${labels.length ? `<div class="c-labels">${labels.map(l=>`<span class="lbl" data-bidi>${hl(l)}</span>`).join('')}</div>` : ''}
     <div class="c-dates">${i.due ? `<span class="due ${dc}" title="${esc(t('due.title', {date:fmtDay(i.due)}))}">${I.cal}${dc==='over'?esc(t('due.overduePrefix')):''}${esc(dueLabel(i))}</span>` : ''}<span class="age ${age.cls}" title="${esc(age.long)}">${I.clock}<bdi>${esc(age.short)}</bdi></span></div>
@@ -654,7 +699,7 @@ function cardHTML(i){
       ${n ? `<span class="meta-n${d===n?' all':''}" title="${esc(t('card.subtasks', {d, n}))}">${I.sub}<bdi>${d}/${n}</bdi></span>` : ''}
       ${i.comments.length ? `<span class="meta-n" title="${esc(tn('card.comments', i.comments.length))}">${I.comment}${i.comments.length}</span>` : ''}
       ${i.links.length ? `<span class="meta-n" title="${esc(tn('card.links', i.links.length))}">${I.link}${i.links.length}</span>` : ''}
-      <span class="c-right">${i.points!=null ? `<span class="pts" title="${esc(t('f.points'))}">${esc(i.points)}</span>` : ''}${prioIcon(i.priority)}</span>
+      <span class="c-right">${i.points!=null ? `<span class="pts" title="${esc(t('f.points'))}">${esc(i.points)}</span>` : ''}${prioIcon(i.priority)}${isShared() ? creatorAv(i) : ''}</span>
     </div>
   </article>`;
 }
@@ -674,6 +719,16 @@ function composerHTML(){
 }
 let prevCounts = {};
 let lastCols = null;
+function archivePromptCount(){
+  if (!canEdit() || !S.archive?.on) return 0;
+  const d = new Date(); if (d.getDate() < S.archive.day || S.archive.handled === ym(d)) return 0;
+  return S.issues.filter(i=>!i.archived && isDone(i)).length;
+}
+function archivePromptHTML(){
+  const n = archivePromptCount(); if (!n) return '';
+  return `<div class="arch-prompt" role="status"><div class="ap-head">${I.archive}<b>${esc(t('ap.title'))}</b></div><p>${esc(tn('ap.text', n))}</p>
+    <div class="ap-acts"><button class="btn primary sm" data-act="ap-yes">${esc(t('ap.yes'))}</button><button class="btn subtle sm" data-act="ap-no">${esc(t('ap.no'))}</button></div></div>`;
+}
 function renderBoard(){
   const all = isAll(), b = curBoard();
   if (!b){
@@ -682,6 +737,8 @@ function renderBoard(){
     return;
   }
   const scroll = {}; $$('.list',board).forEach(l=>scroll[l.dataset.status] = l.scrollTop);
+  // keep typing in the inline composer when its column is redrawn (e.g. a save comes back from the server)
+  const ca = document.activeElement, compSel = ca?.matches?.('.composer textarea') ? [ca.selectionStart, ca.selectionEnd] : null;
   const pool = scopeIssues(), vis = pool.filter(matches), f = filtering();
   const cols = all ? vColumns() : b.columns, inCol = all ? (i,c)=>vKey(i)===c.id : (i,c)=>i.status===c.id;
   if (composer && !cols.some(c=>c.id===composer)) composer = null;
@@ -690,7 +747,8 @@ function renderBoard(){
     const items = vis.filter(i=>inCol(i,c)), total = pool.filter(i=>inCol(i,c)).length;
     const empty = !pool.length && c === cols[0] ? `<div class="empty-hint">${esc(all ? t('empty.allNone') : edit ? t('empty.board') : t('empty.boardRo'))}</div>` : '';
     return `<section class="col" data-col="${esc(c.id)}" data-cat="${c.cat}" aria-label="${esc(c.name)}">
-      <header class="col-head"><span class="col-name" data-bidi title="${esc(c.name)}">${esc(c.name)}</span><span class="col-count" data-s="${esc(c.id)}"><bdi>${f ? esc(t('col.countOf', {a:items.length, b:total})) : total}</bdi></span>${c.cat==='done'&&items.length?`<span class="col-done" title="${esc(catName('done'))}">${I.check}</span>${edit?`<button class="btn icon subtle sm col-arch" data-act="archive-col" data-status="${esc(c.id)}" aria-label="${esc(t('col.archiveAll', {name:c.name}))}" title="${esc(tn('col.archiveN', items.length))}">${I.archive}</button>`:''}`:''}</header>
+      <header class="col-head"><span class="col-name" data-bidi title="${esc(c.name)}">${esc(c.name)}</span><span class="col-count" data-s="${esc(c.id)}"><bdi>${f ? esc(t('col.countOf', {a:items.length, b:total})) : total}</bdi></span>${c.cat==='done'&&items.length?`<span class="col-done" title="${esc(catName('done'))}">${I.check}</span>`:''}${c.cat==='done'&&edit?`<button class="btn icon subtle sm col-arch" data-act="archive-col" data-status="${esc(c.id)}" aria-label="${esc(t('col.archiveAll', {name:c.name}))}" title="${esc(items.length ? tn('col.archiveN', items.length) : t('col.archiveNone'))}"${items.length?'':' disabled'}>${I.archive}</button>`:''}</header>
+      ${c.cat==='done' && c === cols.find(x=>x.cat==='done') ? archivePromptHTML() : ''}
       <div class="list" data-status="${esc(c.id)}">${items.map(cardHTML).join('') || empty}</div>
       ${edit ? `<div class="col-foot">${composer===c.id ? composerHTML() : `<button class="add-inline" data-act="add-inline" data-status="${esc(c.id)}">${I.plus}${esc(t('btn.createIssue'))}</button>`}</div>` : '<div class="col-foot ro-foot"></div>'}
     </section>`;
@@ -711,6 +769,7 @@ function renderBoard(){
   });
   if (composer){
     const ta = $('.composer textarea',board); autosize(ta);
+    if (compSel && document.activeElement !== ta && !composerFocus){ ta.focus({preventScroll:true}); try { ta.setSelectionRange(...compSel); } catch(e){} }
     if (composerFocus){ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); composerFocus = false;
       const list = $(`.list[data-status="${CSS.escape(composer)}"]`,board); if (list) list.scrollTop = list.scrollHeight; }
   }
@@ -761,6 +820,194 @@ function renderList(archive){
   listview.innerHTML = `<table class="tbl"><thead><tr>${cols.map(([k,l,c])=>k ? `<th class="${c}"><button data-act="sort" data-k="${k}" class="${sk===k?'on':''}${sk===k&&sortBy.dir<0&&sk===sortBy.k?' desc':''}">${esc(t(l))}${I.arrow}</button></th>` : `<th><span class="sr">${esc(t('th.actions'))}</span></th>`).join('')}</tr></thead>
   <tbody>${vis.map(([i])=>row(i)).join('')}</tbody></table>`;
 }
+/* ================= Table view =================
+   A spreadsheet-style grid of the same tasks: every cell edits the task directly, so it stays in
+   sync with the board (and with everyone else) with no extra data. */
+const sheetview = $('#sheetview');
+let sheetSort = {k:null, dir:1}, sheetCache = null, sheetPending = false, sheetFocusVal = null, lastTouch = null;
+function sheetCols(){
+  return ['key','title','status','prio',...(isAll() ? ['board'] : []),'type','plat','start','due','company','desc','subs','by'];
+}
+const PRIO_TINT = {highest:'#C9372C', high:'#E56910', medium:'#B38600', low:'#1D7AFC', lowest:'#626F86'};
+function sheetVal(i, k){
+  switch(k){
+    case 'key': return (boardOf(i)?.key || '') + String(i.num).padStart(6,'0');
+    case 'title': return lower(i.title); case 'prio': return PRANK[i.priority];
+    case 'status': { const b = boardOf(i); return b ? b.columns.findIndex(c=>c.id===i.status) : 0; }
+    case 'board': return lower(boardOf(i)?.name); case 'type': return S.types.findIndex(x=>x.id===i.type);
+    case 'plat': return i.color ? lower(platLabelOf(i.color)) : '￿';
+    case 'start': return i.start || '￿'; case 'due': return i.due || '￿';
+    case 'company': return lower(i.labels.join(',')) || '￿'; case 'desc': return lower(i.desc) || '￿';
+    case 'subs': return i.subtasks.length ? i.subtasks.filter(x=>x.done).length / i.subtasks.length : 2;
+    case 'by': { const c = creatorOf(i); return c ? lower(c.name || c.email) : '￿'; }
+  }
+  return 0;
+}
+function sheetCell(i, k, edit){
+  const id = i.id, ro = !edit;
+  const menu = (f, inner, cls='')=>ro ? `<span class="chip ${cls}">${inner}</span>` : `<button class="chip ${cls}" data-act="s-menu" data-sf="${f}" data-id="${id}" aria-haspopup="menu">${inner}${I.chev}</button>`;
+  switch(k){
+    case 'key': return `<td class="s-key"><button class="s-open" data-act="open-issue" data-id="${id}" title="${esc(t('sheet.open'))}">${typeIcon(i.type)}<span class="key${isDone(i)?' done':''}">${esc(key(i))}</span></button></td>`;
+    case 'title': return `<td class="s-title">${ro ? `<span class="s-ro" data-bidi>${hl(i.title || t('issue.untitled'))}</span>` : `<input class="s-in" data-sf="title" data-id="${id}" value="${esc(i.title)}" data-bidi autocomplete="off" aria-label="${esc(t('x.col.title'))}">`}</td>`;
+    case 'status': { const c = colOf(i); return `<td>${menu('status', `<span class="dot"></span><span data-bidi>${esc(c?.name || '')}</span>`, 'st '+(c?.cat||''))}</td>`; }
+    case 'prio': return `<td>${menu('prio', `${prioIcon(i.priority)}<span>${esc(prioName(i.priority))}</span>`, 'pr')}</td>`.replace('class="chip pr"', `class="chip pr" style="--pc:${PRIO_TINT[i.priority]}"`);
+    case 'board': return `<td>${menu('board', `${bAv(boardOf(i),'xs')}<span data-bidi>${esc(boardOf(i)?.name || '')}</span>`, 'plain')}</td>`;
+    case 'type': return `<td>${menu('type', `${typeIcon(i.type)}<span data-bidi>${esc(typeOf(i.type).name)}</span>`, 'plain')}</td>`;
+    case 'plat': return `<td>${menu('plat', i.color ? `<i class="pf-dot" style="--sw:${i.color}"></i><span>${esc(platLabelOf(i.color))}</span>` : `<span class="t-muted">—</span>`, i.color ? 'plat' : 'plain')}</td>`;
+    case 'start': case 'due': {
+      const f = k, v = i[f], cls = f === 'due' ? dueClass(i) : '';
+      if (ro) return `<td class="s-date ${cls}">${v ? esc(fmtDay(v)) : '<span class="t-muted">—</span>'}</td>`;
+      return `<td class="s-date ${cls}"><input type="date" class="s-in" data-sf="${f}" data-id="${id}" value="${esc(v)}" aria-label="${esc(t('x.col.'+f))}"></td>`; }
+    case 'company': return `<td class="s-company">${ro ? `<span class="s-ro" data-bidi>${esc(i.labels.join(', '))}</span>` : `<input class="s-in" data-sf="labels" data-id="${id}" value="${esc(i.labels.join(', '))}" data-bidi autocomplete="off" placeholder="—" aria-label="${esc(t('x.col.company'))}">`}</td>`;
+    case 'desc': return `<td class="s-desc">${ro ? `<span class="s-ro" data-bidi>${esc(cardDesc(i.desc))}</span>` : `<textarea class="s-in" data-sf="desc" data-id="${id}" rows="1" data-bidi placeholder="—" aria-label="${esc(t('x.col.desc'))}">${esc(i.desc)}</textarea>`}</td>`;
+    case 'subs': { const n = i.subtasks.length, d = i.subtasks.filter(x=>x.done).length;
+      return `<td class="s-subs">${n ? `<button class="s-prog${d===n?' all':''}" data-act="open-issue" data-id="${id}" title="${esc(t('card.subtasks', {d, n}))}"><span class="bar"><b style="width:${Math.round(d/n*100)}%"></b></span><bdi>${d}/${n}</bdi></button>` : '<span class="t-muted">—</span>'}</td>`; }
+    case 'by': { const c = creatorOf(i); return `<td class="s-by">${c ? `${avatar(c,'xs')}<span data-bidi>${esc(c.name || c.email)}</span>` : '<span class="t-muted">—</span>'}</td>`; }
+  }
+  return '<td></td>';
+}
+const SHEET_PAGE = 150; // rows are added as you scroll, so big boards open fast (500 rows at once took ~0.6s)
+let sheetLimit = SHEET_PAGE, sheetIO = null;
+function renderSheet(){
+  const all = isAll(), b = curBoard(), edit = canEdit();
+  if (!b){ sheetview.innerHTML = `<div class="empty-state"><b>${esc(t('empty.noBoards'))}</b></div>`; sheetCache = null; return; }
+  const cols = sheetCols();
+  const bIx = new Map(S.boards.map((x,ix)=>[x.id, x.order ?? ix]));
+  const colIx = i=>{ const bb = boardOf(i); return bb ? bb.columns.findIndex(c=>c.id===i.status) : 0; };
+  let vis = S.issues.filter(i=>!i.archived && (all || i.boardId===b.id)).filter(matches).map((i,ix)=>[i,ix]);
+  if (sheetSort.k){ const k = sheetSort.k, d = sheetSort.dir, E = '￿';
+    vis.sort((a,c)=>{ const x = sheetVal(a[0],k), y = sheetVal(c[0],k); if (x===y) return a[1]-c[1]; if (x===E || x===2 && k==='subs') return 1; if (y===E || y===2 && k==='subs') return -1; return (x<y?-1:1)*d; }); } // empty cells always last
+  else vis.sort((a,c)=>((bIx.get(a[0].boardId)??0)-(bIx.get(c[0].boardId)??0)) || (colIx(a[0])-colIx(c[0])) || (a[0].rank-c[0].rank) || a[1]-c[1]);
+  vis = vis.map(x=>x[0]);
+  const scope = wsId + (all ? ALL : b.id);
+  const layoutKey = [scope, cols.join(','), sheetSort.k, sheetSort.dir, edit, getLang(), query, [...qf].join(), typeFilter, platFilter].join('|');
+  if (!sheetCache || sheetCache.key !== layoutKey) sheetLimit = SHEET_PAGE;
+  if (fx.new){ const ix = vis.findIndex(i=>i.id===fx.new); if (ix >= sheetLimit) sheetLimit = ix + 20; } // a task just created is always shown
+  const shown = vis.slice(0, sheetLimit), more = vis.length - shown.length;
+  const rows = shown.map(i=>[i.id, `<tr data-id="${i.id}">${cols.map(k=>sheetCell(i,k,edit)).join('')}</tr>`]);
+  const a = document.activeElement, foc = a && sheetview.contains(a) && a.matches('input,textarea') ? a.closest('tr')?.dataset.id || 'add' : null;
+  const tb = $('tbody', sheetview), ids = rows.map(r=>r[0]), order = ids.join(',');
+  const moreRow = ()=>more ? `<tr class="s-more"><td colspan="${cols.length}">${esc(tn('sheet.more', more))}</td></tr>` : '';
+  if (sheetCache && sheetCache.key === layoutKey && tb && (sheetCache.order === order || (sheetCache.order && order.startsWith(sheetCache.order + ',')))){
+    // same rows (maybe more of them): swap only the rows that changed, never the one being edited
+    for (const [id, h] of rows){
+      if (!sheetCache.html.has(id)) continue;
+      if (sheetCache.html.get(id) === h) continue;
+      if (id === foc){ sheetPending = true; continue; }
+      const tr = $(`tr[data-id="${CSS.escape(id)}"]`, tb); if (!tr) continue;
+      const tpl = document.createElement('template'); tpl.innerHTML = h; tr.replaceWith(tpl.content.firstElementChild);
+      sheetCache.html.set(id, h);
+    }
+    const extra = rows.filter(r=>!sheetCache.html.has(r[0]));
+    $('.s-more', tb)?.remove();
+    if (extra.length){ tb.insertAdjacentHTML('beforeend', extra.map(r=>r[1]).join('')); extra.forEach(([id,h])=>sheetCache.html.set(id, h)); sheetCache.order = order; }
+    tb.insertAdjacentHTML('beforeend', moreRow());
+    watchMore();
+    return;
+  }
+  if (foc && foc !== 'add' && sheetCache && tb){ sheetPending = true; return; } // rows added/removed/re-ordered: rebuild once the edit is done
+  const addVal = foc === 'add' ? a.value : null;
+  const same = sheetCache && sheetCache.scope === scope, sx = same ? sheetview.scrollLeft : 0, sy = same ? sheetview.scrollTop : 0;
+  const head = cols.map(k=>`<th class="h-${k}"><button data-act="s-sort" data-k="${k}" class="${sheetSort.k===k?'on':''}${sheetSort.k===k&&sheetSort.dir<0?' desc':''}">${esc(t('x.col.'+k))}${I.arrow}</button></th>`).join('');
+  const empty = !rows.length ? `<tr class="s-empty"><td colspan="${cols.length}">${esc(filtering() ? t('empty.listFiltered') : t('sheet.empty'))}</td></tr>` : '';
+  const add = edit ? `<tr class="s-add"><td colspan="${cols.length}"><form data-form="sheet-add" class="s-add-f">${I.plus}<input data-k="sheet-add" placeholder="${esc(all ? t('sheet.addIn', {board:(boardById(P.lastBoard?.[wsId]) || S.boards[0]).name}) : t('sheet.add'))}" data-bidi autocomplete="off" enterkeyhint="done" aria-label="${esc(t('sheet.add'))}"></form></td></tr>` : '';
+  sheetview.innerHTML = `<table class="sheet${all?' all':''}"><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody><tfoot>${add}</tfoot></table>`;
+  sheetview.scrollLeft = sx; sheetview.scrollTop = sy;
+  if (addVal != null){ const ad = $('[data-k="sheet-add"]', sheetview); if (ad){ ad.value = addVal; ad.focus({preventScroll:true}); } }
+  sheetCache = {key:layoutKey, order, html:new Map(rows), scope};
+  sheetPending = false;
+  watchMore();
+}
+function watchMore(){
+  sheetIO?.disconnect();
+  const m = $('.s-more', sheetview); if (!m) return;
+  sheetIO = new IntersectionObserver(es=>{ if (es.some(e=>e.isIntersecting)){ sheetIO.disconnect(); sheetLimit += SHEET_PAGE; requestAnimationFrame(()=>{ if (P.view === 'table') renderSheet(); }); } }, {root:sheetview, rootMargin:'600px'});
+  sheetIO.observe(m);
+}
+function sheetMenu(i, f){
+  const opt = (v, inner, on)=>`<button class="menu-i" role="menuitem" data-act="s-set" data-sf="${f}" data-v="${esc(v)}">${inner}${chk(on)}</button>`;
+  if (f === 'status') return `<div class="menu-h">${esc(t('menu.changeStatus'))}</div>` + boardOf(i).columns.map(c=>opt(c.id, lozC(c), c.id===i.status)).join('');
+  if (f === 'prio') return `<div class="menu-h">${esc(t('x.col.prio'))}</div>` + PRIOS.map(p=>opt(p, `${prioIcon(p)}<span>${esc(prioName(p))}</span>`, p===i.priority)).join('');
+  if (f === 'type') return `<div class="menu-h">${esc(t('x.col.type'))}</div>` + S.types.map(x=>opt(x.id, `${typeSVG(x)}<span data-bidi>${esc(x.name)}</span>`, x.id===i.type)).join('');
+  if (f === 'board') return `<div class="menu-h">${esc(t('x.col.board'))}</div>` + S.boards.map(x=>opt(x.id, `${bAv(x,'xs')}<span data-bidi>${esc(x.name)}</span>`, x.id===i.boardId)).join('');
+  if (f === 'plat') return `<div class="menu-h">${esc(t('x.col.plat'))}</div>` + opt('', `<i class="pf-dot none"></i><span>${esc(t('filter.noPlatform'))}</span>`, !i.color)
+    + PLATFORMS.map(([n,h])=>opt(h, `<i class="pf-dot" style="--sw:${h}"></i><span>${esc(platLabel(n))}</span>`, i.color===h)).join('')
+    + (i.color && !PLATFORMS.some(x=>x[1]===i.color) ? opt(i.color, `<i class="pf-dot" style="--sw:${i.color}"></i><span>${esc(colorName(i.color))}</span>`, true) : '');
+  return '';
+}
+function sheetSet(i, f, v){
+  if (f === 'status'){ if (v !== i.status) moveIssue(i.id, v, null, {toast:false}); return; }
+  if (f === 'board'){ if (v !== i.boardId) moveToBoard(i, v); return; }
+  if (f === 'plat'){ if ((v||null) !== (i.color||null)) setColor(i, v); return; }
+  if (f === 'prio'){ if (v === i.priority || !PRIOS.includes(v)) return; i.priority = v; touch(i, t('h.priority', {name:prioName(v)})); }
+  if (f === 'type'){ if (v === i.type || !S.types.some(x=>x.id===v)) return; i.type = v; touch(i, t('h.type', {name:typeOf(v).name})); }
+  save(); render();
+}
+// one history line per field while it's being edited (Safari's date picker fires "change" on open)
+function touchOnce(i, f, text){
+  const now = Date.now(), h = lastTouch && lastTouch.id === i.id && lastTouch.f === f && now - lastTouch.at < 120000 && i.history.find(x=>x.id === lastTouch.hid);
+  if (h){ h.text = text; h.at = now; i.updated = now; lastTouch.at = now; return; }
+  touch(i, text); lastTouch = {id:i.id, f, hid:i.history[0]?.id, at:now};
+}
+function sheetCommit(el){
+  if (!canEdit()) return;
+  const i = get(el.dataset.id), f = el.dataset.sf; if (!i) return;
+  if (f === 'title'){
+    const v = el.value.trim();
+    if (!v){ el.value = i.title; return; }
+    if (v === i.title) return;
+    i.title = v.slice(0, 500); touchOnce(i, f, t('h.summary'));
+  } else if (f === 'desc'){
+    if (el.value === i.desc) return;
+    i.desc = el.value; touchOnce(i, f, t('h.desc'));
+  } else if (f === 'labels'){
+    const next = [...new Map(el.value.split(',').map(normLabel).filter(Boolean).map(l=>[lower(l), l])).values()];
+    const added = next.filter(l=>!i.labels.some(x=>sameText(x,l))), removed = i.labels.filter(l=>!next.some(x=>sameText(x,l)));
+    if (!added.length && !removed.length) return;
+    i.labels = next; added.forEach(l=>touch(i, t('h.companyAdd', {name:l}))); removed.forEach(l=>touch(i, t('h.companyRemove', {name:l})));
+  } else if (f === 'due'){
+    const v = isISO(el.value) ? el.value : '';
+    if (v === i.due) return;
+    i.due = v; touchOnce(i, f, v ? t('h.due', {date:fmtDay(v)}) : t('h.dueNone'));
+  } else if (f === 'start'){
+    const v = isISO(el.value) ? el.value : today();
+    if (v === i.start){ el.value = v; return; }
+    i.start = v; touchOnce(i, f, t('h.start', {date:fmtDay(v)}));
+  } else return;
+  save(); render();
+}
+sheetview.addEventListener('focusin', e=>{ const el = e.target; if (el.matches('.s-in')){ sheetFocusVal = el.value; if (el.tagName === 'TEXTAREA') autosize(el); } });
+sheetview.addEventListener('change', e=>{ if (e.target.matches('.s-in')) sheetCommit(e.target); });
+sheetview.addEventListener('input', e=>{ if (e.target.matches('textarea.s-in')) autosize(e.target); });
+sheetview.addEventListener('focusout', e=>{
+  const el = e.target;
+  if (el.matches('textarea.s-in')) el.style.height = '';
+  if (sheetPending) setTimeout(()=>{ const a = document.activeElement; if (sheetPending && !(a && sheetview.contains(a) && a.matches('input,textarea'))){ sheetPending = false; render(); } }, 0);
+});
+sheetview.addEventListener('keydown', e=>{
+  const el = e.target; if (!el.matches('.s-in') || e.isComposing) return;
+  if (e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); if (sheetFocusVal != null) el.value = sheetFocusVal; el.blur(); return; }
+  if (e.key === 'Enter' && !(el.tagName === 'TEXTAREA' && (e.shiftKey || e.altKey))){
+    // Enter saves and moves down like a spreadsheet (Shift+Enter makes a new line in the description)
+    e.preventDefault();
+    const tr = el.closest('tr'), f = el.dataset.sf, dir = e.shiftKey && el.tagName !== 'TEXTAREA' ? 'previousElementSibling' : 'nextElementSibling';
+    sheetCommit(el); sheetFocusVal = el.value;
+    let n = tr[dir]; while (n && !n.dataset.id) n = n[dir];
+    const next = n && $(`.s-in[data-sf="${f}"]`, n);
+    if (next){ next.focus(); if (next.select && next.type !== 'date') next.select(); } else el.blur();
+  }
+});
+sheetview.addEventListener('submit', e=>{
+  e.preventDefault();
+  const form = e.target; if (form.dataset.form !== 'sheet-add' || !canEdit()) return;
+  const inp = $('input', form), title = inp.value.trim(); if (!title) return;
+  const b = isAll() ? (boardById(P.lastBoard?.[wsId]) || S.boards[0]) : curBoard(); if (!b) return;
+  inp.value = '';
+  const i = createIssue({title, boardId:b.id, status:b.columns[0].id, type:S.types[0]?.id, labels:[normLabel(b.name)]});
+  toast(isAll() ? t('toast.createdIn', {key:key(i), board:b.name}) : t('toast.created', {key:key(i)}), {action:t('btn.view'), fn:()=>openIssue(i.id)});
+  requestAnimationFrame(()=>{ $('[data-k="sheet-add"]', sheetview)?.focus({preventScroll:true}); const tr = $(`tr[data-id="${i.id}"]`, sheetview); tr?.scrollIntoView({block:'nearest'}); tr?.classList.add('s-new'); });
+});
+
 function renderSide(){
   const all = isAll(), b = curBoard(), edit = canEdit();
   const openCount = id=>S.issues.filter(i=>(id===ALL || i.boardId===id) && !i.archived && !isDone(i)).length || '';
@@ -808,12 +1055,12 @@ function renderBell(){
 function render(){
   if (screen !== 'app') return;
   const v = P.view, all = isAll(), b = curBoard(), name = all ? t('nav.allBoards') : (b?.name || ws?.name || '');
-  board.hidden = v !== 'board'; listview.hidden = v === 'board';
-  const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : name;
+  board.hidden = v !== 'board'; listview.hidden = v !== 'list' && v !== 'archive'; sheetview.hidden = v !== 'table';
+  const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : v === 'table' ? t('view.tableOf', {name}) : name;
   $('#viewTitle').innerHTML = `${!all && b && isImg(b.logo) ? `<span class="h1-logo"><img src="${esc(b.logo)}" alt=""></span>` : ''}<span data-bidi>${esc(title)}</span>`;
   $$('.side-item[data-view]').forEach(x=>x.classList.toggle('on', x.dataset.view===v));
   if (typeFilter && !S.types.some(x=>x.id===typeFilter)) typeFilter = null;
-  if (v === 'board') renderBoard(); else renderList(v === 'archive');
+  if (v === 'board') renderBoard(); else if (v === 'table') renderSheet(); else renderList(v === 'archive');
   renderSide();
   const pool = scopeIssues(), open = pool.filter(i=>!isDone(i)), tday = today();
   const over = open.filter(i=>i.due && i.due < tday).length;
@@ -877,7 +1124,7 @@ function createIssue(d){
   b.seq = Math.max(b.seq||0, ...S.issues.filter(x=>x.boardId===b.id).map(x=>x.num)) + 1;
   const now = Date.now();
   const i = normIssue('i-'+uid(), {priority:'medium', start:today(), ...d, boardId:b.id, num:b.seq, status:col.id, doneAt:col.cat==='done' ? now : null,
-    created:now, updated:now, history:[{id:uid(), at:now, text:t('h.created'), by:user.name}]});
+    created:now, updated:now, creator:me(), history:[{id:uid(), at:now, text:t('h.created'), by:user.name}]});
   i.rank = undefined;
   S.issues.push(i); fx.new = i.id; save(); render();
   return i;
@@ -976,12 +1223,18 @@ function follow(){
 }
 function autoscroll(){
   const {x, y} = drag, E = 60, br = board.getBoundingClientRect();
-  if (x < br.left + E) board.scrollLeft -= Math.ceil((br.left+E-x)/5);
-  else if (x > br.right - E) board.scrollLeft += Math.ceil((x-br.right+E)/5);
+  const hd = drag.touch ? 9 : 5; // gentler on phones, where one column is almost the whole screen
+  if (x < br.left + E) board.scrollLeft -= Math.ceil((br.left+E-x)/hd);
+  else if (x > br.right - E) board.scrollLeft += Math.ceil((x-br.right+E)/hd);
   if (drag.col){
-    const list = $('.list',drag.col), lr = list.getBoundingClientRect();
-    if (y < lr.top + 40) list.scrollTop -= Math.ceil((lr.top+40-y)/4);
-    else if (y > lr.bottom - 40 && y < lr.bottom + 80) list.scrollTop += Math.ceil((y-lr.bottom+40)/4);
+    // speeds up the longer the card is held at the edge, so long columns (100+ tasks) stay usable
+    const list = $('.list',drag.col), lr = list.getBoundingClientRect(), now = performance.now();
+    const dir = y < lr.top + 40 ? -1 : (y > lr.bottom - 40 && y < lr.bottom + 80) ? 1 : 0;
+    if (dir !== drag.edgeDir || list !== drag.edgeList){ drag.edgeDir = dir; drag.edgeList = list; drag.edgeT = now; }
+    if (dir){
+      const base = dir < 0 ? Math.ceil((lr.top+40-y)/4) : Math.ceil((y-lr.bottom+40)/4), boost = 1 + Math.min((now - drag.edgeT)/350, 7);
+      list.scrollTop += dir * Math.min(Math.ceil(base * boost), 90);
+    }
   }
 }
 function end(cancel){
@@ -1117,7 +1370,7 @@ function meMenu(){
     ${isOwner() ? `<button class="menu-i" role="menuitem" data-act="ws-settings">${I.users}${esc(t('ws.shareMenu'))}</button>` : ''}
     <button class="menu-i" role="menuitem" data-act="request-access">${I.mail}${esc(t('ws.requestAccess'))}</button>
     <button class="menu-i" role="menuitem" data-act="lang">${I.globe}${getLang()==='he'?'English':'עברית'}</button>
-    <button class="menu-i" role="menuitem" data-act="theme">${effectiveTheme()==='dark'?I.sun:I.moon}${esc(effectiveTheme()==='dark'?t('nav.light'):t('nav.dark'))}</button>
+    <div class="menu-sep"></div>${themePicker()}
     <div class="menu-sep"></div>
     <button class="menu-i" role="menuitem" data-act="signout">${I.logout}${esc(t('acc.signout'))}</button>`;
 }
@@ -1129,7 +1382,9 @@ function showModal(html, kind, size=''){
   closePop();
   if (!modalKind) lastFocus = document.activeElement;
   layer.innerHTML = `<div class="backdrop"><div class="dialog ${size}" role="dialog" aria-modal="true" tabindex="-1">${html}</div></div>`;
-  modalKind = kind; shell.inert = true; $('.nav').inert = true;
+  modalKind = kind;
+  // Making the page inert restyles every card (slow with hundreds of tasks), so let the dialog paint first.
+  if (!shell.inert) requestAnimationFrame(()=>setTimeout(()=>{ if (modalKind){ shell.inert = true; $('.nav').inert = true; } }, 0));
   const bd = $('.backdrop',layer); let downOnBd = false;
   bd.addEventListener('pointerdown', e=>{ downOnBd = e.target === bd; });
   bd.addEventListener('click', e=>{ if (e.target === bd && downOnBd) closeModal(); });
@@ -1217,7 +1472,7 @@ function issueHTML(i){
         <div class="sec-head"><h3>${esc(t('f.subtasks'))}</h3>${n ? `<span class="sec-meta" id="stMeta">${esc(t('st.pct', {n:pct}))}</span>` : ''}</div>
         ${n ? `<div class="pbar"><b></b></div>` : ''}
         <ul class="sts">${i.subtasks.map(s=>stHTML(s, edit)).join('')}</ul>
-        ${edit ? `<form class="st-add" data-form="subtask">${I.plus}<input data-k="st-add" placeholder="${esc(t('st.add'))}" aria-label="${esc(t('st.new'))}" data-bidi autocomplete="off"></form>` : (n ? '' : `<p class="muted-p">${esc(t('st.none'))}</p>`)}
+        ${edit ? `<form class="st-add" data-form="subtask"><button type="submit" class="st-plus" tabindex="-1" aria-label="${esc(t('st.addBtn'))}">${I.plus}</button><input data-k="st-add" placeholder="${esc(t('st.add'))}" aria-label="${esc(t('st.new'))}" data-bidi autocomplete="off" enterkeyhint="done"><button type="submit" class="btn primary sm st-go">${esc(t('st.addBtn'))}</button></form>` : (n ? '' : `<p class="muted-p">${esc(t('st.none'))}</p>`)}
       </section>
       <section class="m-sec">
         <div class="sec-head"><h3>${esc(t('f.activity'))}</h3>
@@ -1245,7 +1500,7 @@ function issueHTML(i){
           ${S.boards.length > 1 && edit ? `<dt>${esc(t('f.board'))}</dt><dd><select class="ctl" data-f="board" aria-label="${esc(t('f.board'))}">${S.boards.map(x=>`<option value="${x.id}"${x.id===i.boardId?' selected':''}>${esc(x.name)}</option>`).join('')}</select></dd>` : ''}
         </dl>
       </div>
-      <p class="m-stamp">${esc(t('stamp.created', {date:fmtTime(i.created)}))}<br>${esc(t('stamp.updated', {ago:ago(i.updated)}))}${i.archived ? `<br>${esc(t('stamp.archived', {date:fmtTime(i.archivedAt)}))}` : ''}</p>
+      <p class="m-stamp">${(()=>{ const c = creatorOf(i); return c ? `<span class="m-by">${avatar(c,'xs')}<span>${esc(t('stamp.createdBy', {date:fmtTime(i.created), name:c.name||c.email}))}</span></span>` : esc(t('stamp.created', {date:fmtTime(i.created)})); })()}<br>${esc(t('stamp.updated', {ago:ago(i.updated)}))}${i.archived ? `<br>${esc(t('stamp.archived', {date:fmtTime(i.archivedAt)}))}` : ''}</p>
     </aside>
   </div>`;
 }
@@ -1333,15 +1588,24 @@ function submitCreate(form){
   const fld = $('#sumFld',form);
   if (!title){ fld.classList.add('invalid'); $('.err',fld).hidden = false; $('[name="title"]',form).focus(); return; }
   const pts = String(f.get('points')||'').trim(), start = isISO(f.get('start')) ? f.get('start') : today();
-  const i = createIssue({title, boardId:f.get('board'), type:f.get('type'), status:f.get('status'), priority:f.get('priority'), due:f.get('due')||'', start,
-    points: pts === '' ? null : Number(pts), desc:String(f.get('desc')||'').trim(), color:isHex(f.get('color')) ? f.get('color') : null,
-    labels:[...new Set(String(f.get('labels')||'').split(',').map(normLabel).filter(Boolean))]});
-  lastCreateType = i.type; P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = i.boardId; savePrefs();
-  const onOther = !isAll() && i.boardId !== curBoard()?.id;
-  const view = ()=>{ if (!isAll() && i.boardId !== curBoard()?.id) switchBoard(i.boardId); openIssue(i.id); };
-  if (f.get('another')){ form.title.value = ''; form.desc.value = ''; autosize(form.desc); form.title.focus(); }
-  else { closeModal(); openFocusId = i.id; lastFocus = null; }
-  toast(onOther ? t('toast.createdIn', {key:key(i), board:boardOf(i).name}) : t('toast.created', {key:key(i)}), {action:t('btn.view'), fn:view});
+  const another = !!f.get('another'), ws0 = wsId;
+  const d = {title, boardId:f.get('board'), type:f.get('type'), status:f.get('status'), priority:f.get('priority'), due:isISO(f.get('due')) ? f.get('due') : '', start,
+    points: pts === '' || isNaN(Number(pts)) ? null : Number(pts), desc:String(f.get('desc')||'').trim(), color:isHex(f.get('color')) ? f.get('color') : null,
+    labels:[...new Set(String(f.get('labels')||'').split(',').map(normLabel).filter(Boolean))]};
+  const go = ()=>{
+    if (wsId !== ws0 || !canEdit()) return;
+    const i = createIssue(d);
+    lastCreateType = i.type; P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = i.boardId; savePrefs();
+    const onOther = !isAll() && i.boardId !== curBoard()?.id;
+    const view = ()=>{ if (!isAll() && i.boardId !== curBoard()?.id) switchBoard(i.boardId); openIssue(i.id); };
+    if (!another) openFocusId = i.id;
+    toast(onOther ? t('toast.createdIn', {key:key(i), board:boardOf(i).name}) : t('toast.created', {key:key(i)}), {action:t('btn.view'), fn:view});
+  };
+  if (another){ go(); form.title.value = ''; form.desc.value = ''; autosize(form.desc); form.title.focus(); return; }
+  // Close the dialog at once and let that frame paint before the board re-renders. Before, the dialog
+  // stayed up while the board rebuilt and then faded out, so it looked open after the task existed.
+  closeModal(true);
+  requestAnimationFrame(()=>setTimeout(go, 0));
 }
 
 /* ----- Logos ----- */
@@ -1583,6 +1847,12 @@ function renderWsSettingsBody(){
       </ul>
       ${!members.length ? `<p class="muted-p">${esc(t('share.none'))}</p>` : ''}
       <div class="copy-link"><span dir="ltr">${esc(siteUrl)}</span><button class="btn sm" data-act="copy-site">${I.copy}${esc(t('share.copyLink'))}</button></div>
+    </section>
+    <section class="ws-sec">
+      <h3>${I.archive}${esc(t('ap.setTitle'))}</h3>
+      <p class="req-note">${esc(t('ap.setHint'))}</p>
+      <label class="chk-row"><input type="checkbox" data-k="ap-on"${S.archive?.on ? ' checked' : ''}><span>${esc(t('ap.setOn'))}</span></label>
+      <label class="fld ap-day">${esc(t('ap.setDay'))}<select class="inp" data-k="ap-day"${S.archive?.on ? '' : ' disabled'}>${Array.from({length:28}, (_,k)=>k+1).map(d=>`<option value="${d}"${d===S.archive?.day?' selected':''}>${d}</option>`).join('')}</select></label>
     </section>`);
 }
 async function setMember(email, role){
@@ -1618,7 +1888,7 @@ async function sendRequest(form){
 
 /* ----- Shortcuts ----- */
 function openShortcuts(){
-  const k = [['C','sc.create'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
+  const k = [['C','sc.create'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['T','sc.table'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
   showModal(`${head(t('sc.title'))}<dl class="kbd-list">${k.map(([a,b])=>`<dt dir="ltr">${a.split(' ').map(x=>x==='+'?' + ':`<kbd>${x}</kbd>`).join('')}</dt><dd>${esc(t(b))}</dd>`).join('')}</dl>`, 'help', 'tiny');
 }
 
@@ -1673,6 +1943,11 @@ layer.addEventListener('change', e=>{
   }
   if (modalKind === 'types'){ if (k.startsWith('tmove-')){ const ty = tDraft.types.find(x=>x.id===k.slice(6)); ty._target = el.value; } return; }
   if (modalKind === 'wsSettings'){
+    if (k === 'ap-on' || k === 'ap-day'){
+      S.archive = {...normArchive(S.archive), [k === 'ap-on' ? 'on' : 'day']:k === 'ap-on' ? el.checked : Number(el.value)};
+      if (k === 'ap-on') { const sel = $('[data-k="ap-day"]', layer); if (sel) sel.disabled = !el.checked; }
+      save(); render(); toast(t('ap.saved'));
+    }
     if (el.classList.contains('role-sel')){ const em = el.dataset.email, r = el.value; setMember(em, r).then(ok=>{ if (ok) toast(t('toast.roleChanged', {email:em, role:t('role.'+r)})); }); }
     return;
   }
@@ -1685,12 +1960,39 @@ layer.addEventListener('change', e=>{
   }
   if (f === 'type'){ i.type = el.value; touch(i, t('h.type', {name:typeOf(i.type).name})); }
   else if (f === 'priority'){ i.priority = el.value; touch(i, t('h.priority', {name:prioName(i.priority)})); }
-  else if (f === 'due'){ i.due = el.value; touch(i, i.due ? t('h.due', {date:fmtDay(i.due)}) : t('h.dueNone')); }
-  else if (f === 'start'){ i.start = isISO(el.value) ? el.value : today(); touch(i, t('h.start', {date:fmtDay(i.start)})); }
+  else if (f === 'due' || f === 'start'){
+    // Safari fills today's date and fires "change" the moment its picker opens. Rebuilding the
+    // dialog then would close the picker, so while the field still has focus only patch around it.
+    if (f === 'due') i.due = isISO(el.value) ? el.value : '';
+    else i.start = isISO(el.value) ? el.value : today();
+    const text = f === 'due' ? (i.due ? t('h.due', {date:fmtDay(i.due)}) : t('h.dueNone')) : t('h.start', {date:fmtDay(i.start)});
+    const live = document.activeElement === el;
+    const h = dateEdit && dateEdit.el === el && i.history.find(x=>x.id === dateEdit.hid);
+    if (h){ h.text = text; h.at = Date.now(); i.updated = Date.now(); }
+    else { touch(i, text); if (live) dateEdit = {el, hid:i.history[0].id}; }
+    save(); render();
+    if (live) patchIssueDates(i); else refreshIssue();
+    return;
+  }
   else if (f === 'points'){ const v = el.value.trim(); i.points = v === '' || isNaN(Number(v)) ? null : Number(v); touch(i, i.points == null ? t('h.pointsNone') : t('h.points', {n:i.points})); }
   else if (f === 'board'){ moveToBoard(i, el.value); return; }
   else return;
   save(); render(); refreshIssue();
+});
+let dateEdit = null;
+function patchIssueDates(i){
+  const dd = $('[data-f="due"]',layer)?.parentElement;
+  if (dd){
+    const btn = $('[data-act="clear-due"]',dd);
+    if (i.due && !btn) dd.insertAdjacentHTML('beforeend', `<button class="btn icon subtle sm" data-act="clear-due" aria-label="${esc(t('f.clearDue'))}" title="${esc(t('f.clearDue'))}">${I.x}</button>`);
+    else if (!i.due && btn) btn.remove();
+  }
+  const ag = $('.side-top .age',layer), age = ageInfo(i);
+  if (ag){ ag.className = `age big ${age.cls}`; ag.title = age.long; ag.innerHTML = `${I.clock}${esc(age.long)}`; }
+}
+layer.addEventListener('focusout', e=>{
+  if (e.target.type !== 'date' || !dateEdit || dateEdit.el !== e.target) return;
+  dateEdit = null;
 });
 function addLabel(input){
   const i = get(openId), l = normLabel(input.value);
@@ -1778,7 +2080,7 @@ function updateComment(ta){
 }
 
 /* ================= Global click actions ================= */
-const EDIT_ACTS = new Set(['new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
+const EDIT_ACTS = new Set(['s-menu','s-set','ap-yes','ap-no','imp-add','imp-replace','new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
 document.addEventListener('click', async e=>{
   const b = e.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act;
@@ -1792,7 +2094,10 @@ document.addEventListener('click', async e=>{
     case 'signout': closePop(); flush(); await store.signOut(); break;
     case 'retry': if (wsId) openWorkspace(wsId); else location.reload(); break;
     case 'lang': closePop(); setLang(getLang() === 'he' ? 'en' : 'he'); relocalize(); break;
-    case 'theme': closePop(); setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark', true); if (screen !== 'app') rerenderGate(); break;
+    case 'theme': openPop(b, themePicker(), 'theme'); break;
+    case 'set-theme': { const th = b.dataset.th; setTheme(THEMES.includes(th) ? th : 'light', true);
+      $$('.theme-opt', pop).forEach(x=>x.setAttribute('aria-pressed', x.dataset.th === effectiveTheme()));
+      if (screen !== 'app') setTimeout(()=>{ closePop(); rerenderGate(); }, 200); break; }
     case 'ws-menu': openPop(b, wsMenu(), ''); break;
     case 'me-menu': openPop(b, meMenu(), ''); break;
     case 'switch-ws': closePop(); if (b.dataset.id !== wsId) openWorkspace(b.dataset.id); break;
@@ -1839,6 +2144,10 @@ document.addEventListener('click', async e=>{
       break; }
     case 'del-board': closePop(); shell.classList.remove('side-open'); deleteBoard(inPop ? pop.dataset.id : b.dataset.id); break;
     case 'confirm-ok': { const fn = confirmFn; confirmFn = null; fn?.(); break; }
+    case 'imp-add': applyImport('add'); break;
+    case 'imp-replace': if (isOwner()) applyImport('replace'); break;
+    case 'ap-yes': { const list = S.issues.filter(i=>!i.archived && isDone(i)); S.archive = {...S.archive, handled:ym()}; if (list.length) archiveIssues(list, tn('toast.archivedN', list.length)); else { save(); render(); } break; }
+    case 'ap-no': S.archive = {...S.archive, handled:ym()}; save(); render(); toast(t('ap.later')); break;
     case 'types': closePop(); shell.classList.remove('side-open'); openTypes(); break;
     case 'create': openCreate(); break;
     case 'shortcuts': openShortcuts(); break;
@@ -1864,6 +2173,9 @@ document.addEventListener('click', async e=>{
     case 'add-inline': openComposer(b.dataset.status); break;
     case 'card-menu': openPop(b, statusMenu(i, true), i.id); break;
     case 'status-menu': openPop(b, statusMenu(i, false), i.id); break;
+    case 's-menu': if (i) openPop(b, sheetMenu(i, b.dataset.sf), i.id); break;
+    case 's-set': closePop(); if (i) sheetSet(i, b.dataset.sf, b.dataset.v); break;
+    case 's-sort': { const k = b.dataset.k; sheetSort = sheetSort.k !== k ? {k, dir:1} : sheetSort.dir > 0 ? {k, dir:-1} : {k:null, dir:1}; render(); break; }
     case 'set-status': {
       const fromModal = modalKind === 'issue';
       closePop(); moveIssue(i.id, b.dataset.status, null, {toast:!fromModal});
@@ -2025,6 +2337,7 @@ document.addEventListener('keydown', e=>{
   else if (e.key === '/' || code === 'Slash' && !e.shiftKey){ e.preventDefault(); $('#q').focus(); $('#q').select(); }
   else if (k === 'b' || code === 'KeyB'){ P.view = 'board'; savePrefs(); render(); }
   else if (k === 'l' || code === 'KeyL'){ P.view = 'list'; savePrefs(); render(); }
+  else if (k === 't' || code === 'KeyT'){ P.view = 'table'; savePrefs(); render(); }
   else if (k === 'a' || code === 'KeyA'){ if (S.boards.length) switchBoard(ALL); }
   else if (e.key === '?'){ openShortcuts(); }
 });
@@ -2054,41 +2367,241 @@ async function copyText(s){
       const ok = document.execCommand('copy'); ta.remove(); return ok; } catch(e2){ return false; }
   }
 }
+/* ================= Backup as a spreadsheet (.xlsx) ================= */
+// Visible sheets are for people (and can be edited in Google Sheets / Excel); the hidden "_data" sheet keeps
+// everything else (ids, comments, history, logos, column setup) so a restore is lossless.
+const XCOLS = [ // [key, width, style]
+  ['title',44,ST.title],['prio',13,ST.center],['board',16,ST.center],['status',18,ST.center],['start',13,ST.date],['due',13,ST.date],
+  ['type',17,ST.center],['plat',17,ST.center],['company',16,ST.wrap],['points',9,ST.num],['desc',48,ST.wrap],['subs',34,ST.wrap],
+  ['links',34,ST.wrap],['cmts',40,ST.meta],['arch',10,ST.center],['key',11,ST.key],['by',18,ST.center],['created',17,ST.dtime],['updated',17,ST.dtime],['id',3,ST.meta]
+];
+const BCOLS = [['name',22,ST.title],['bkey',10,ST.key],['color',12,ST.center],['columns',60,ST.wrap],['open',10,ST.num],['total',10,ST.num],['logo',10,ST.center],['id',3,ST.meta]];
+const TCOLS = [['name',24,ST.title],['color',12,ST.center],['glyph',12,ST.center],['count',10,ST.num],['id',3,ST.meta]];
+const PRIO_CHIP = {highest:'#C9372C', high:'#E56910', medium:'#E2B203', low:'#1D7AFC', lowest:'#8590A2'};
+const CAT_CHIP = {todo:['#DCDFE4','#172B4D'], doing:['#1D7AFC','#FFFFFF'], wait:['#F5CD47','#172B4D'], done:['#22A06B','#FFFFFF']};
+const textOn = hex=>{ const n = parseInt(String(hex).slice(1), 16); const l = (0.299*(n>>16) + 0.587*((n>>8)&255) + 0.114*(n&255)) / 255; return l > 0.62 ? '#172B4D' : '#FFFFFF'; };
+const hx = k=>t('x.col.'+k);
+const yesNo = b=>b ? t('x.yes') : t('x.no');
+function platLabelOf(hex){ if (!hex) return ''; const p = PLATFORMS.find(x=>x[1]===hex); if (p) return platLabel(p[0]); return colorName(hex); }
+const CHUNK = 30000;
 function exportData(){
   flush();
-  const json = JSON.stringify({app:'workbench', version:5, exported:new Date().toISOString(), workspace:ws?.name, boards:S.boards, types:S.types, issues:S.issues}, null, 2);
-  const blob = new Blob([json], {type:'application/json'});
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `workbench-backup-${today()}.json`;
-  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  const boardsSorted = S.boards.slice().sort((a,b)=>a.order-b.order);
+  const bIx = new Map(boardsSorted.map((b,i)=>[b.id,i]));
+  const colIx = i=>{ const b = boardOf(i); return b ? b.columns.findIndex(c=>c.id===i.status) : 0; };
+  const issues = S.issues.slice().sort((a,b)=>(a.archived-b.archived) || (bIx.get(a.boardId)??99)-(bIx.get(b.boardId)??99) || colIx(a)-colIx(b) || (a.rank-b.rank));
+  const statusName = i=>colOf(i)?.name || '';
+  const lines = (arr, f)=>arr.map(f).join('\n');
+  const head = cols=>cols.map(([k])=>({v:k==='id' ? 'id' : hx(k), s:ST.head}));
+  const taskRows = issues.map(i=>{
+    const cell = {
+      title:i.title, prio:prioName(i.priority), board:boardOf(i)?.name || '', status:statusName(i),
+      start:i.start ? {v:isoToSerial(i.start), s:ST.date} : '', due:i.due ? {v:isoToSerial(i.due), s:ST.date} : '',
+      type:typeOf(i.type).name, plat:platLabelOf(i.color), company:i.labels.join(', '), points:i.points ?? '',
+      desc:i.desc, subs:lines(i.subtasks, s=>(s.done ? '☑ ' : '☐ ') + s.text), links:lines(i.links, l=>l.title ? `${l.title} — ${l.url}` : l.url),
+      cmts:lines(i.comments, c=>`${c.by?.name || ''} (${fmtTime(c.at)}): ${c.text}`), arch:yesNo(i.archived), key:key(i), by:(c=>c ? (c.name || c.email) : '')(creatorOf(i)),
+      created:{v:msToSerial(i.created), s:ST.dtime}, updated:{v:msToSerial(i.updated), s:ST.dtime}, id:i.id
+    };
+    return XCOLS.map(([k,,s])=>{ const c = cell[k]; return c && typeof c === 'object' ? c : {v:c, s}; });
+  });
+  const statusCat = new Map(); boardsSorted.forEach(b=>b.columns.forEach(c=>{ if (!statusCat.has(c.name)) statusCat.set(c.name, c.cat); }));
+  const xc = k=>XCOLS.findIndex(c=>c[0]===k);
+  const platValues = [...PLATFORMS.map(([n,h])=>[platLabel(n),h]), ...EXTRA.map(([n,h])=>[t('color.'+n),h])];
+  const tasks = {name:t('x.sheet.tasks'), rtl:getLang()==='he', freeze:1, headHeight:26, autoFilter:true, tab:'#5B2C83',
+    cols:XCOLS.map(([k,w])=>({width:w, hidden:k==='id'})), rows:[head(XCOLS), ...taskRows],
+    lists:[{col:xc('prio'), values:PRIOS.map(prioName)}, {col:xc('board'), values:boardsSorted.map(b=>b.name)}, {col:xc('status'), values:[...statusCat.keys()]},
+      {col:xc('type'), values:S.types.map(x=>x.name)}, {col:xc('plat'), values:platValues.map(p=>p[0])}, {col:xc('arch'), values:[t('x.yes'), t('x.no')]}],
+    chips:[{col:xc('prio'), values:PRIOS.map(p=>({text:prioName(p), bg:PRIO_CHIP[p], fg:textOn(PRIO_CHIP[p])}))},
+      {col:xc('status'), values:[...statusCat].map(([n,c])=>({text:n, bg:CAT_CHIP[c][0], fg:CAT_CHIP[c][1]}))},
+      {col:xc('board'), values:boardsSorted.map(b=>({text:b.name, bg:b.color, fg:textOn(b.color)}))},
+      {col:xc('type'), values:S.types.map(x=>({text:x.name, bg:x.color, fg:textOn(x.color)}))},
+      {col:xc('plat'), values:platValues.map(([n,h])=>({text:n, bg:h, fg:textOn(h)}))},
+      {col:xc('arch'), values:[{text:t('x.yes'), bg:'#8590A2', fg:'#FFFFFF'}]}]};
+  const boards = {name:t('x.sheet.boards'), rtl:getLang()==='he', freeze:1, headHeight:26, tab:'#2898BD', cols:BCOLS.map(([k,w])=>({width:w, hidden:k==='id'})),
+    rows:[head(BCOLS), ...boardsSorted.map(b=>{ const all = S.issues.filter(i=>i.boardId===b.id);
+      const cell = {name:b.name, bkey:b.key, color:colorName(b.color), columns:b.columns.map(c=>c.name).join(' → '), open:all.filter(i=>!i.archived && !isDone(i)).length, total:all.length, logo:yesNo(isImg(b.logo)), id:b.id};
+      return BCOLS.map(([k,,s])=>({v:cell[k], s})); })],
+    chips:[{col:2, values:PALETTE.map(([n,h])=>({text:t('color.'+n), bg:h, fg:textOn(h)}))}]};
+  const types = {name:t('x.sheet.types'), rtl:getLang()==='he', freeze:1, headHeight:26, tab:'#8F7EE7', cols:TCOLS.map(([k,w])=>({width:w, hidden:k==='id'})),
+    rows:[head(TCOLS), ...S.types.map(x=>{ const cell = {name:x.name, color:colorName(x.color), glyph:x.glyph, count:S.issues.filter(i=>i.type===x.id).length, id:x.id};
+      return TCOLS.map(([k,,s])=>({v:cell[k], s})); })],
+    chips:[{col:0, values:S.types.map(x=>({text:x.name, bg:x.color, fg:textOn(x.color)}))}]};
+  const dataRows = [['workbench-backup', 1, new Date().toISOString(), ws?.name || '']];
+  const pushJson = (kind, id, obj)=>{ const j = JSON.stringify(obj), row = [kind, id]; for (let p = 0; p < j.length; p += CHUNK) row.push(j.slice(p, p + CHUNK)); dataRows.push(row); };
+  S.boards.forEach(b=>pushJson('board', b.id, b));
+  S.types.forEach(x=>pushJson('type', x.id, x));
+  S.issues.forEach(i=>pushJson('issue', i.id, i));
+  pushJson('meta', 'settings', {archive:S.archive});
+  const blob = writeXlsx({title:ws?.name || 'Workbench', rtl:getLang()==='he', accent:'#5B2C83',
+    sheets:[tasks, boards, types, {name:'_data', hidden:true, rows:dataRows.map(r=>r.map(v=>({v})))}]});
+  // ASCII file name: some browsers drop non-Latin names on downloads
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `workbench-backup-${today()}.xlsx`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 1500);
   toast(t('toast.exported'));
+}
+
+/* ----- reading a backup spreadsheet back ----- */
+const norm = s=>String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+const both = k=>[_dicts.he?.[k], _dicts.en?.[k]].filter(Boolean).map(norm);
+function headerMap(row, cols){
+  const m = {}; (row||[]).forEach((h, ix)=>{ const n = norm(h); if (n === 'id') m.id = ix; else for (const [k] of cols) if (both('x.col.'+k).includes(n)) m[k] = ix; });
+  return m;
+}
+const findSheet = (sheets, k)=>sheets.find(s=>both('x.sheet.'+k).includes(norm(s.name)));
+function cellDate(v){
+  if (typeof v === 'number' && v > 20000 && v < 80000) return serialToIso(v);
+  const s = String(v ?? '').trim(); let m;
+  if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s))) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  if ((m = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/.exec(s))) return `${m[3].length===2 ? '20'+m[3] : m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  return '';
+}
+const byName = (list, name)=>list.find(x=>norm(x.name)===norm(name));
+function colorFrom(v){
+  const s = norm(v); if (!s) return null; if (isHex(String(v).trim())) return String(v).trim().toUpperCase();
+  for (const [n,h] of PLATFORMS) if (norm(n)===s || both('plat.'+n).includes(s)) return h;
+  for (const [n,h] of [...PALETTE, ...EXTRA]) if (both('color.'+n).includes(s) || n===s) return h;
+  return null;
+}
+function backupFromSheets(sheets){
+  const data = sheets.find(s=>s.name==='_data'), J = {board:new Map(), type:new Map(), issue:new Map(), meta:new Map()};
+  if (data && data.rows[0]?.[0] === 'workbench-backup'){
+    data.rows.slice(1).forEach(r=>{ if (!r || !J[r[0]]) return; try { J[r[0]].set(String(r[1]), JSON.parse(r.slice(2).map(x=>x ?? '').join(''))); } catch(e){} });
+  }
+  const tSheet = findSheet(sheets, 'tasks'), bSheet = findSheet(sheets, 'boards'), tySheet = findSheet(sheets, 'types');
+  if (!tSheet && !J.issue.size) throw new Error('bad');
+  // boards
+  let boards = [];
+  if (bSheet){
+    const hm = headerMap(bSheet.rows[0], BCOLS);
+    bSheet.rows.slice(1).forEach(r=>{
+      const name = String(r[hm.name] ?? '').trim(); if (!name) return;
+      const base = J.board.get(String(r[hm.id] ?? '')) ;
+      const b = base ? clone(base) : {id:'b-'+uid(), name, key:keyFromName(name), color:PALETTE[boards.length % PALETTE.length][1], columns:null};
+      b.name = name; if (hm.bkey != null && String(r[hm.bkey] ?? '').trim()) b.key = String(r[hm.bkey]).trim();
+      const col = hm.color != null ? colorFrom(r[hm.color]) : null; if (col) b.color = col;
+      if (!b.columns && hm.columns != null){ const names = String(r[hm.columns] ?? '').split(/→|,|\||\n/).map(x=>x.trim()).filter(Boolean);
+        b.columns = names.map((n, ix)=>({id:'c'+uid(), name:n, cat:ix===names.length-1 && names.length > 1 ? 'done' : ix===0 ? 'todo' : 'doing'})); }
+      if (!b.columns || !b.columns.length) b.columns = COLS_PPC();
+      boards.push(b);
+    });
+  } else boards = [...J.board.values()].map(clone);
+  // types
+  let types = [];
+  if (tySheet){
+    const hm = headerMap(tySheet.rows[0], TCOLS);
+    tySheet.rows.slice(1).forEach(r=>{ const name = String(r[hm.name] ?? '').trim(); if (!name) return;
+      const base = J.type.get(String(r[hm.id] ?? '')); const x = base ? clone(base) : {id:'t-'+uid(), name, color:PALETTE[types.length % PALETTE.length][1], glyph:'ring'};
+      x.name = name; const col = hm.color != null ? colorFrom(r[hm.color]) : null; if (col) x.color = col;
+      if (hm.glyph != null && GLYPHS[String(r[hm.glyph] ?? '').trim()]) x.glyph = String(r[hm.glyph]).trim();
+      types.push(x); });
+  } else types = [...J.type.values()].map(clone);
+  const ensureBoard = name=>{ let b = byName(boards, name); if (!b){ b = {id:'b-'+uid(), name, key:keyFromName(name), color:PALETTE[boards.length % PALETTE.length][1], columns:COLS_PPC()}; boards.push(b); } return b; };
+  const ensureType = name=>{ let x = byName(types, name); if (!x){ x = {id:'t-'+uid(), name, color:PALETTE[(types.length + 3) % PALETTE.length][1], glyph:'ring'}; types.push(x); } return x; };
+  // tasks
+  let issues = [];
+  if (tSheet){
+    const hm = headerMap(tSheet.rows[0], XCOLS), has = k=>hm[k] != null, val = (r,k)=>has(k) ? r[hm[k]] : undefined, str = (r,k)=>String(val(r,k) ?? '').trim();
+    tSheet.rows.slice(1).forEach(r=>{
+      if (!r || !str(r,'title')) return;
+      const base = J.issue.get(str(r,'id')), i = base ? clone(base) : {num:0, comments:[], history:[], created:Date.now(), updated:Date.now()};
+      i.title = str(r,'title');
+      const b = has('board') && str(r,'board') ? ensureBoard(str(r,'board')) : (boards.find(x=>x.id===i.boardId) || boards[0] || ensureBoard(t('x.defaultBoard')));
+      if (i.boardId !== b.id) i.num = 0;
+      i.boardId = b.id;
+      if (has('status')){ const sn = str(r,'status'); let c = sn ? byName(b.columns, sn) : null;
+        if (!c && sn){ c = {id:'c'+uid(), name:sn, cat:both('cat.done').includes(norm(sn)) ? 'done' : 'todo'}; b.columns.push(c); }
+        i.status = (c || b.columns.find(x=>x.id===i.status) || b.columns[0]).id; }
+      else if (!b.columns.some(x=>x.id===i.status)) i.status = b.columns[0].id;
+      if (has('type') && str(r,'type')) i.type = ensureType(str(r,'type')).id;
+      if (has('prio')){ const p = PRIOS.find(k=>both('prio.'+k).includes(norm(val(r,'prio'))) || k===norm(val(r,'prio'))); i.priority = p || i.priority || 'medium'; }
+      if (has('plat')) i.color = colorFrom(val(r,'plat'));
+      if (has('company')) i.labels = str(r,'company').split(',').map(normLabel).filter(Boolean);
+      if (has('start')) i.start = cellDate(val(r,'start')) || i.start;
+      if (has('due')) i.due = cellDate(val(r,'due'));
+      if (has('points')){ const n = Number(val(r,'points')); i.points = str(r,'points') !== '' && Number.isFinite(n) ? n : null; }
+      if (has('desc')){ const d = String(val(r,'desc') ?? ''); if (!(base && base.desc.length > d.length && d.length >= MAX_CELL - 10 && base.desc.startsWith(d))) i.desc = d; } // long texts are cut in the visible cell
+      if (has('subs')){ const old = i.subtasks || [];
+        i.subtasks = str(r,'subs').split('\n').map(x=>x.trim()).filter(Boolean).map(line=>{
+          const done = /^(☑|✔|✅|\[x\])/i.test(line), text = line.replace(/^(☑|☐|✔|✅|\[x\]|\[ \]|-|•)\s*/i, '').trim();
+          const prev = old.find(s=>s.text===text); return {id:prev?.id || uid(), text, done}; }).filter(s=>s.text); }
+      if (has('links')){ const old = i.links || [];
+        i.links = str(r,'links').split('\n').map(x=>x.trim()).filter(Boolean).map(line=>{
+          const parts = line.split(/\s+—\s+|\s+-\s+(?=\S*\.)/), url = normUrl(parts.at(-1)); if (!url) return null;
+          const title = parts.length > 1 ? parts.slice(0, -1).join(' — ').trim() : ''; const prev = old.find(l=>l.url===url);
+          return {id:prev?.id || uid(), url, title}; }).filter(Boolean); }
+      if (has('arch')){ const a = both('x.yes').includes(norm(val(r,'arch'))) || val(r,'arch') === true; if (a && !i.archived) i.archivedAt = Date.now(); i.archived = a; }
+      issues.push(i);
+    });
+  } else issues = [...J.issue.values()].map(clone);
+  if (!boards.length) throw new Error('bad');
+  const used = new Set(boards.map(x=>String(x.key||'').toUpperCase()).filter(Boolean)); let kn = 1;
+  boards.forEach(x=>{ if (!x.key){ while (used.has('C'+kn)) kn++; x.key = 'C'+kn; used.add(x.key); } });
+  return {boards, types:types.length ? types : TYPES_PPC(), issues, archive:J.meta.get('settings')?.archive};
+}
+async function readBackupFile(f){
+  if (f.size > 25e6) throw new Error('too-big');
+  if (/\.xlsx$/i.test(f.name) || /spreadsheetml/.test(f.type)){
+    const {sheets} = await readXlsx(await f.arrayBuffer());
+    return backupFromSheets(sheets);
+  }
+  return JSON.parse(await f.text());
+}
+function openImportChoice(conv, raw){
+  const dlg = showModal(`${head(t('imp.title'))}<p class="confirm-p">${esc(t('imp.text2', {b:tn('boards', conv.boards.length), i:tn('issues', conv.issues.length)}))}</p>
+    ${isOwner() ? `<p class="confirm-p muted-p">${esc(t('imp.replaceHint'))}</p>` : ''}
+    <div class="m-foot" style="border:0"><span class="sp"></span><button class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button>
+      ${isOwner() ? `<button class="btn danger" data-act="imp-replace">${esc(t('imp.replace'))}</button>` : ''}<button class="btn primary" data-act="imp-add">${esc(t('imp.add'))}</button></div>`, 'confirm', 'narrow');
+  dlg.setAttribute('aria-label', t('imp.title'));
+  importPending = {conv, raw};
+}
+let importPending = null;
+function applyImport(mode){
+  const p = importPending; importPending = null; if (!p) return;
+  const conv = p.conv;
+  if (mode === 'replace'){
+    S.boards = conv.boards.map((b,ix)=>({...b, order:ix*1000}));
+    S.types = conv.types.slice();
+    S.issues = conv.issues.map(i=>({...i, rank:undefined}));
+    if (p.raw?.archive) S.archive = normArchive(p.raw.archive);
+    P.active[wsId] = ALL; savePrefs();
+  } else {
+    const startOrder = (S.boards.at(-1)?.order ?? 0) + 1000;
+    conv.boards.forEach((b,ix)=>{ b.order = startOrder + ix*1000; let k = b.key, n = 2; while (S.boards.some(x=>x.key===k)) k = b.key + (n++); b.key = k; });
+    const known = new Set(S.types.map(x=>x.id)), knownNames = new Map(S.types.map(x=>[norm(x.name), x.id]));
+    const remap = new Map();
+    conv.types.forEach(x=>{ if (known.has(x.id)) return; const same = knownNames.get(norm(x.name)); if (same) remap.set(x.id, same); else S.types.push(x); });
+    S.boards.push(...conv.boards); S.issues.push(...conv.issues.map(i=>({...i, type:remap.get(i.type) || i.type, rank:undefined})));
+  }
+  save(); closeModal(); render(); toast(t('toast.imported', {n:tn('issues', conv.issues.length)}));
 }
 $('#importFile').addEventListener('change', async e=>{
   const f = e.target.files[0]; e.target.value = ''; if (!f || !canEdit()) return;
   try {
-    const raw = JSON.parse(await f.text());
+    const raw = await readBackupFile(f);
     const conv = convertLocal(raw);
     if (!conv.boards.length) throw new Error('bad');
-    openConfirm({title:t('imp.title'), ok:t('imp.ok'), text:esc(t('imp.text', {b:tn('boards', conv.boards.length), i:tn('issues', conv.issues.length)})), fn:()=>{
-      const startOrder = (S.boards.at(-1)?.order ?? 0) + 1000;
-      conv.boards.forEach((b,ix)=>{ b.order = startOrder + ix*1000; let k = b.key, n = 2; while (S.boards.some(x=>x.key===k)) k = b.key + (n++); b.key = k; });
-      const known = new Set(S.types.map(x=>x.id));
-      conv.types.forEach(x=>{ if (!known.has(x.id)) S.types.push(x); });
-      S.boards.push(...conv.boards); S.issues.push(...conv.issues.map(i=>({...i, rank:undefined})));
-      save(); closeModal(); render(); toast(t('toast.imported', {n:tn('issues', conv.issues.length)}));
-    }});
-  } catch(err){ toast(t('toast.importBad')); }
+    openImportChoice(conv, raw);
+  } catch(err){ console.error(err); toast(err?.code === 'no-inflate' ? t('toast.importOld') : t('toast.importBad')); }
 });
 
 /* ================= Theme, language, shell ================= */
 const sysDark = matchMedia('(prefers-color-scheme: dark)');
-const effectiveTheme = ()=>P.theme || (sysDark.matches ? 'dark' : 'light');
+const THEMES = ['light','dark','purple'];
+const effectiveTheme = ()=>THEMES.includes(P.theme) ? P.theme : (sysDark.matches ? 'dark' : 'light');
+const themeIcon = ()=>({light:I.sun, dark:I.moon, purple:I.palette})[effectiveTheme()];
+const THEME_SW = {light:['#FFFFFF','linear-gradient(135deg,#F4F6FA,#E9F2FF)'], dark:['#2C333A','linear-gradient(135deg,#1D2125,#161A1D)'], purple:['linear-gradient(90deg,#4A2373,#7E4CB8)','linear-gradient(135deg,#FAF7FE,#EBDFFA)']};
+function themePicker(){
+  return `<div class="menu-h th">${esc(t('theme.title'))}</div><div class="theme-row" role="group" aria-label="${esc(t('theme.title'))}">${THEMES.map(th=>
+    `<button type="button" class="theme-opt" data-act="set-theme" data-th="${th}" aria-pressed="${th===effectiveTheme()}"><span class="sw-t"><i style="background:${THEME_SW[th][0]}"></i><i style="background:${THEME_SW[th][1]}"></i></span>${esc(t('theme.'+th))}</button>`).join('')}</div>`;
+}
 function setTheme(th, animate){
   if (th){ P.theme = th; savePrefs(); }
   const root = document.documentElement, apply = ()=>{ root.dataset.theme = effectiveTheme(); };
   // Cross-fade the whole page on the GPU instead of transitioning every element's colors.
   if (animate && !reduce && document.startViewTransition && root.dataset.theme !== effectiveTheme()) document.startViewTransition(apply);
   else apply();
-  const btn = $('#themeBtn'); if (btn){ btn.innerHTML = effectiveTheme() === 'dark' ? I.sun : I.moon; btn.title = btn.ariaLabel = effectiveTheme() === 'dark' ? t('nav.light') : t('nav.dark'); }
+  const btn = $('#themeBtn'); if (btn){ btn.innerHTML = themeIcon(); btn.title = btn.ariaLabel = t('nav.theme'); btn.setAttribute('aria-haspopup', 'menu'); }
+  const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = {light:'#FFFFFF', dark:'#1D2125', purple:'#4A2373'}[effectiveTheme()];
 }
 sysDark.addEventListener?.('change', ()=>{ if (!P.theme) setTheme(null); });
 function applyShell(){ shell.classList.toggle('side-closed', !P.side); }
@@ -2110,7 +2623,7 @@ function relocalize(){
 
 /* ================= Init ================= */
 $$('[data-i]').forEach(el=>el.insertAdjacentHTML('afterbegin', I[el.dataset.i]));
-if (!['board','list','archive'].includes(P.view)) P.view = 'board';
+if (!['board','list','table','archive'].includes(P.view)) P.view = 'board';
 setLang(getLang()); staticText(); setTheme(null); applyShell();
 renderLoading();
 setInterval(()=>{ if (screen === 'app' && !drag && !modalKind && !composer && !popAnchor) render(); }, 60000);
