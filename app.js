@@ -264,7 +264,7 @@ const scopeIssues = ()=>{ const b = curBoard(); return S.issues.filter(i=>!i.arc
 function normBoard(id, d){
   return {id, name:String(d.name||'Board'), key:String(d.key||'B').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,10)||'B',
     color:isHex(d.color)?d.color:'#1D7AFC', logo:isImg(d.logo)?d.logo:null, seq:Number(d.seq)||0, order:Number.isFinite(d.order)?d.order:0,
-    ...(d.alias && typeof d.alias === 'string' ? {alias:d.alias.slice(0,100)} : {}), ...(d.tc ? {tc:1} : {}),
+    ...(d.alias && typeof d.alias === 'string' ? {alias:d.alias.slice(0,100)} : {}), ...(d.tc ? {tc:Number(d.tc) || 1} : {}),
     columns:(Array.isArray(d.columns)&&d.columns.length?d.columns:COLS_BASIC()).map(c=>({id:sid(c?.id, 'c'+uid()), name:String(c.name||''), cat:CATS.includes(c.cat)?c.cat:'todo'}))};
 }
 const normBy = b=>b && typeof b === 'object' ? {uid:String(b.uid||''), name:String(b.name||''), email:String(b.email||''), ...(isPhoto(b.photo) ? {photo:b.photo} : {})} : null;
@@ -391,6 +391,11 @@ function dataArrived(){ if (loaded.boards && loaded.issues && loaded.meta){ addT
 function ensureTrackerCols(b){
   const has = w=>b.columns.some(c=>loose(c.name) === loose(w) || loose(TRK_COL_OUT[norm(c.name)] || '') === loose(w));
   let added = false;
+  // her sheet's "ממתין לאישור": boards made from the basic set (to do / in progress / done) had no such column
+  if (!b.columns.some(c=>c.cat === 'wait')){
+    const fi = b.columns.findIndex(x=>loose(x.name) === loose('דורש תיקונים') || norm(x.name) === 'needs fixes'), di = b.columns.findIndex(x=>x.cat === 'done');
+    b.columns.splice(fi >= 0 ? fi : di >= 0 ? di : b.columns.length, 0, {id:'c'+uid(), name:t('tpl.col.approval'), cat:'wait'}); added = true;
+  }
   if (!has('דורש תיקונים')){
     const c = {id:'c'+uid(), name:t('tpl.col.fix'), cat:'doing'}, wi = b.columns.findIndex(x=>x.cat === 'wait'), di = b.columns.findIndex(x=>x.cat === 'done');
     b.columns.splice(wi >= 0 ? wi + 1 : di >= 0 ? di : b.columns.length, 0, c); added = true;
@@ -398,10 +403,11 @@ function ensureTrackerCols(b){
   if (!has('לא בוצע')){ b.columns.push({id:'c'+uid(), name:t('tpl.col.notdone'), cat:'done'}); added = true; }
   return added;
 }
+const TC = 2; // version of the one-time column update (2: also adds a waiting-for-approval column)
 function addTrackerStatuses(){
   if (!canEdit()) return;
-  const todo = S.boards.filter(b=>!b.tc); if (!todo.length) return;
-  todo.forEach(b=>{ ensureTrackerCols(b); b.tc = 1; });
+  const todo = S.boards.filter(b=>(b.tc || 0) < TC); if (!todo.length) return;
+  todo.forEach(b=>{ ensureTrackerCols(b); b.tc = TC; });
   save();
 }
 
@@ -622,7 +628,7 @@ async function createWorkspace(kind){
     let boards = [], issues = [], types;
     if (kind === 'template'){
       const logos = await Promise.all(PPC_CLIENTS.map(([,,,f])=>fetch(`assets/clients/${f}.png`).then(r=>r.ok ? r.blob() : null).then(b=>b && readLogo(b)).catch(()=>null)));
-      boards = PPC_CLIENTS.map(([n,k,c],ix)=>({id:'b-'+uid(), name:n, key:k, color:c, logo:logos[ix] || null, seq:0, order:ix*1000, columns:COLS_PPC(), tc:1}));
+      boards = PPC_CLIENTS.map(([n,k,c],ix)=>({id:'b-'+uid(), name:n, key:k, color:c, logo:logos[ix] || null, seq:0, order:ix*1000, columns:COLS_PPC(), tc:TC}));
       types = TYPES_PPC();
     } else if (kind === 'local'){
       const conv = convertLocal(localImportCandidate()?.raw);
@@ -1906,7 +1912,7 @@ function saveBoard(){
   }
   const cols = d.columns.map(({id,name,cat})=>({id,name,cat}));
   if (d.isNew){
-    S.boards.push({id:d.id, name:d.name, key:d.key, color:d.color, logo:d.logo||null, seq:0, order:undefined, columns:cols, tc:1});
+    S.boards.push({id:d.id, name:d.name, key:d.key, color:d.color, logo:d.logo||null, seq:0, order:undefined, columns:cols, tc:TC});
     P.active[wsId] = d.id; P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = d.id; savePrefs();
     composer = null; save(); closeModal(); render();
     toast(t('toast.boardCreated', {name:d.name}));
@@ -2843,7 +2849,7 @@ function applyTracker(){
   let order = (S.boards.reduce((m, b)=>Math.max(m, b.order ?? 0), 0)) + 1000;
   for (const [k, name] of plan.newBoards){
     let key = keyFromName(name) || 'C', n = 2; const base = key; while (S.boards.some(x=>x.key === key)) key = (base + n++).slice(0, 10);
-    const b = {id:'b-'+uid(), name, key, color:PALETTE[S.boards.length % PALETTE.length][1], logo:null, seq:0, order, columns:COLS_PPC(), tc:1}; order += 1000;
+    const b = {id:'b-'+uid(), name, key, color:PALETTE[S.boards.length % PALETTE.length][1], logo:null, seq:0, order, columns:COLS_PPC(), tc:TC}; order += 1000;
     S.boards.push(b); boardOfKey.set(k, b);
   }
   const colFor = (b, word)=>{
@@ -2924,7 +2930,7 @@ function applyImport(mode){
     const known = new Set(S.types.map(x=>x.id)), knownNames = new Map(S.types.map(x=>[norm(x.name), x.id]));
     const remap = new Map();
     conv.types.forEach(x=>{ if (known.has(x.id)) return; const same = knownNames.get(norm(x.name)); if (same) remap.set(x.id, same); else S.types.push(x); });
-    S.boards.push(...conv.boards.map(b=>({...b, tc:1}))); S.issues.push(...conv.issues.map(i=>({...i, type:remap.get(i.type) || i.type, rank:undefined})));
+    S.boards.push(...conv.boards.map(b=>({...b, tc:TC}))); S.issues.push(...conv.issues.map(i=>({...i, type:remap.get(i.type) || i.type, rank:undefined})));
   }
   save(); closeModal(); render(); toast(t('toast.imported', {n:tn('issues', conv.issues.length)}));
 }
