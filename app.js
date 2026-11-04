@@ -118,12 +118,12 @@ function normUrl(v){
 function hostOf(u){ try { return new URL(u).hostname.replace(/^www\./,''); } catch(e){ return u; } }
 const initialOf = n=>esc((String(n).trim()[0]||'?').toUpperCase());
 function hue(s){ let h = 0; for (const c of String(s)) h = (h*31 + c.charCodeAt(0)) % 360; return h; }
-const isPhoto = s=>typeof s === 'string' && s.length <= 500 && /^https:\/\/lh[3-6]\.googleusercontent\.com\/[A-Za-z0-9_\-\/=.~]+$/.test(s);
+const isPhoto = s=>typeof s === 'string' && s.length <= 500 && /^https:\/\/lh[0-9]{1,2}\.googleusercontent\.com\/[A-Za-z0-9_\-\/=.~%]+$/.test(s);
 function avatar(p, cls=''){
   p = p || {};
   const n = p.name || p.email || '?', parts = String(n).trim().split(/\s+/);
   const ini = esc(((parts[0]||'?')[0] + (parts[1]?.[0]||'')).toUpperCase()), tip = esc(p.name||p.email||''), bg = `hsl(${hue(p.email||n)} 45% 45%)`;
-  if (isPhoto(p.photo)) return `<img class="avatar ${cls}" src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer" loading="lazy" title="${tip}" data-ini="${ini}" data-bg="${bg}">`;
+  if (isPhoto(p.photo)) return `<img class="avatar ${cls}" src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer"${cls === 'xs' ? ' loading="lazy"' : ''} title="${tip}" data-ini="${ini}" data-bg="${bg}">`;
   return `<span class="avatar ${cls}" style="background:${bg}" title="${tip}">${ini}</span>`;
 }
 // a profile photo that fails to load (old link, offline) falls back to initials
@@ -910,8 +910,9 @@ function renderSheet(){
   const same = sheetCache && sheetCache.scope === scope, sx = same ? sheetview.scrollLeft : 0, sy = same ? sheetview.scrollTop : 0;
   const head = cols.map(k=>`<th class="h-${k}"><button data-act="s-sort" data-k="${k}" class="${sheetSort.k===k?'on':''}${sheetSort.k===k&&sheetSort.dir<0?' desc':''}">${esc(t('x.col.'+k))}${I.arrow}</button></th>`).join('');
   const empty = !rows.length ? `<tr class="s-empty"><td colspan="${cols.length}">${esc(filtering() ? t('empty.listFiltered') : t('sheet.empty'))}</td></tr>` : '';
-  const add = edit ? `<tr class="s-add"><td colspan="${cols.length}"><form data-form="sheet-add" class="s-add-f">${I.plus}<input data-k="sheet-add" placeholder="${esc(all ? t('sheet.addIn', {board:(boardById(P.lastBoard?.[wsId]) || S.boards[0]).name}) : t('sheet.add'))}" data-bidi autocomplete="off" enterkeyhint="done" aria-label="${esc(t('sheet.add'))}"></form></td></tr>` : '';
-  sheetview.innerHTML = `<table class="sheet${all?' all':''}"><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody><tfoot>${add}</tfoot></table>`;
+  // the add bar lives outside the table: a sticky table footer cell drew as a blank box over the name column in iOS Safari
+  const add = edit ? `<form data-form="sheet-add" class="s-addbar">${I.plus}<input data-k="sheet-add" placeholder="${esc(all ? t('sheet.addIn', {board:(boardById(P.lastBoard?.[wsId]) || S.boards[0]).name}) : t('sheet.add'))}" data-bidi autocomplete="off" enterkeyhint="done" aria-label="${esc(t('sheet.add'))}"></form>` : '';
+  sheetview.innerHTML = `<table class="sheet${all?' all':''}"><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody></table>${add}`;
   sheetview.scrollLeft = sx; sheetview.scrollTop = sy;
   if (addVal != null){ const ad = $('[data-k="sheet-add"]', sheetview); if (ad){ ad.value = addVal; ad.focus({preventScroll:true}); } }
   sheetCache = {key:layoutKey, order, html:new Map(rows), scope};
@@ -1008,6 +1009,161 @@ sheetview.addEventListener('submit', e=>{
   requestAnimationFrame(()=>{ $('[data-k="sheet-add"]', sheetview)?.focus({preventScroll:true}); const tr = $(`tr[data-id="${i.id}"]`, sheetview); tr?.scrollIntoView({block:'nearest'}); tr?.classList.add('s-new'); });
 });
 
+/* ================= Calendar view =================
+   Tasks sit on their due date (דד ליין). Drag one to another day to move its due date, or from
+   "no due date" onto a day to give it one. On phones the month shows dots; tap a day to list it. */
+const calview = $('#calview');
+let calAnchor = null, calSel = null, calDrag = null, calSuppress = false, calCap = {all:3, more:2};
+const isoOf = d=>iso(d);
+const addD = (isoStr, n)=>{ const d = new Date(isoStr+'T12:00'); d.setDate(d.getDate()+n); return iso(d); };
+function calRange(){
+  const mode = P.calMode === 'week' ? 'week' : 'month', a = new Date((calAnchor || today())+'T12:00');
+  if (mode === 'week'){ const st = new Date(a); st.setDate(a.getDate() - a.getDay()); return {mode, start:iso(st), days:7, month:a.getMonth()}; }
+  const first = new Date(a.getFullYear(), a.getMonth(), 1, 12), st = new Date(first); st.setDate(1 - first.getDay());
+  const dim = new Date(a.getFullYear(), a.getMonth()+1, 0).getDate(), weeks = Math.ceil((first.getDay() + dim)/7);
+  return {mode, start:iso(st), days:weeks*7, month:a.getMonth(), year:a.getFullYear()};
+}
+function calTitle(r){
+  if (r.mode === 'month') return fmtr('my', {month:'long', year:'numeric'}).format(new Date(r.year, r.month, 1, 12));
+  const a = new Date(r.start+'T12:00'), z = new Date(addD(r.start, 6)+'T12:00');
+  try { return fmtr('range', {day:'numeric', month:'short', year:'numeric'}).formatRange(a, z); } catch(e){ return fmtDay(r.start) + ' – ' + fmtDay(addD(r.start, 6)); }
+}
+function calChip(i, cls=''){
+  const done = isDone(i), over = dueClass(i) === 'over', c = colOf(i);
+  const tip = `${key(i)} · ${i.title || t('issue.untitled')} · ${c?.name || ''}`;
+  return `<button class="cal-chip${done?' done':''}${over?' over':''} ${cls}" data-act="open-issue" data-id="${i.id}" title="${esc(tip)}" style="--cc:${i.color || typeOf(i.type).color}">${isAll() ? bAv(boardOf(i),'xs') : ''}<span class="cc-t" data-bidi>${esc(i.title || t('issue.untitled'))}</span></button>`;
+}
+function calSort(a, b){ return (isDone(a) - isDone(b)) || (PRANK[a.priority] - PRANK[b.priority]) || a.title.localeCompare(b.title); }
+function renderCal(){
+  const all = isAll(), b = curBoard(), edit = canEdit();
+  if (!b){ calview.innerHTML = `<div class="empty-state"><b>${esc(t('empty.noBoards'))}</b></div>`; return; }
+  if (!calAnchor) calAnchor = today();
+  const r = calRange(), pool = scopeIssues().filter(matches), byDay = new Map();
+  for (const i of pool) if (i.due){ let l = byDay.get(i.due); if (!l) byDay.set(i.due, l = []); l.push(i); }
+  byDay.forEach(l=>l.sort(calSort));
+  const undated = pool.filter(i=>!i.due && !isDone(i)).sort(calSort);
+  const tday = today(), mobile = isMobile();
+  if (!calSel || calSel < r.start || calSel > addD(r.start, r.days-1)) calSel = tday >= r.start && tday <= addD(r.start, r.days-1) ? tday : (r.mode === 'month' ? iso(new Date(r.year, r.month, 1, 12)) : r.start);
+  const wd = fmtr('wd', {weekday:'short'}), wdl = fmtr('wdl', {weekday:'long', day:'numeric', month:'long'});
+  const heads = Array.from({length:7}, (_,k)=>`<div class="cal-wd">${esc(wd.format(new Date(addD(r.start,k)+'T12:00')))}</div>`).join('');
+  const capOf = n=>r.mode !== 'month' ? 999 : n <= calCap.all ? n : Math.max(1, calCap.more);
+  const cells = Array.from({length:r.days}, (_,k)=>{
+    const d = addD(r.start, k), dt = new Date(d+'T12:00'), list = byDay.get(d) || [], out = r.mode === 'month' && dt.getMonth() !== r.month;
+    const open = list.filter(i=>!isDone(i)).length, overN = list.filter(i=>dueClass(i)==='over').length;
+    const dots = list.slice(0,4).map(i=>`<i style="--cc:${i.color || typeOf(i.type).color}"${isDone(i)?' class="done"':''}></i>`).join('') + (list.length > 4 ? '<b>+</b>' : '');
+    return `<div class="cal-day${out?' out':''}${d===tday?' today':''}${d<tday?' past':''}${d===calSel?' sel':''}${overN?' has-over':''}" data-day="${d}" role="gridcell" aria-label="${esc(wdl.format(dt))}${list.length ? ', ' + esc(tn('issues', list.length)) : ''}">
+      <div class="cd-head"><button class="cd-num" data-act="cal-sel" data-day="${d}" title="${esc(wdl.format(dt))}">${r.mode === 'week' ? `<span class="cd-wd">${esc(wd.format(dt))}</span>` : ''}${dt.getDate()}</button>
+        ${edit ? `<button class="cd-add" data-act="cal-add" data-day="${d}" aria-label="${esc(t('cal.addOn', {date:fmtDay(d)}))}" title="${esc(t('cal.addOn', {date:fmtDay(d)}))}">${I.plus}</button>` : ''}</div>
+      <div class="cd-list">${(cap=>list.slice(0,cap).map(i=>calChip(i)).join('') + (list.length > cap ? `<button class="cd-more" data-act="cal-day" data-day="${d}">${esc(tn('cal.more', list.length - cap))}</button>` : ''))(capOf(list.length))}</div>
+      <div class="cd-dots" aria-hidden="true">${dots}</div>
+    </div>`;
+  }).join('');
+  const selList = byDay.get(calSel) || [];
+  const dayPanel = `<section class="cal-daylist" aria-live="polite"><div class="cdl-head"><b>${esc(wdl.format(new Date(calSel+'T12:00')))}</b>${edit ? `<button class="btn sm" data-act="cal-add" data-day="${calSel}">${I.plus}${esc(t('cal.add'))}</button>` : ''}</div>
+    ${selList.length ? `<div class="cdl-list">${selList.map(i=>calChip(i,'row')).join('')}</div>` : `<p class="muted-p">${esc(t('cal.none'))}</p>`}</section>`;
+  const und = `<aside class="cal-undated${P.calUndated ? ' open' : ''}" data-day="">
+      <div class="cu-head"><b>${esc(t('cal.undated'))}</b><span class="sec-meta">${undated.length}</span></div>
+      ${edit && undated.length ? `<p class="cu-hint">${esc(mobile ? t('cal.undatedHintTouch') : t('cal.undatedHint'))}</p>` : ''}
+      <div class="cu-list">${undated.length ? undated.map(i=>calChip(i,'row')).join('') : `<p class="muted-p">${esc(t('cal.undatedNone'))}</p>`}</div></aside>`;
+  calview.innerHTML = `<div class="cal-bar">
+      <div class="cal-nav"><button class="btn sm" data-act="cal-today">${esc(t('cal.today'))}</button>
+        <button class="btn icon subtle sm cal-prev" data-act="cal-step" data-n="-1" aria-label="${esc(t('cal.prev'))}" title="${esc(t('cal.prev'))}">${I.chev}</button>
+        <button class="btn icon subtle sm cal-next" data-act="cal-step" data-n="1" aria-label="${esc(t('cal.next'))}" title="${esc(t('cal.next'))}">${I.chev}</button>
+        <h2 class="cal-title">${esc(calTitle(r))}</h2><span class="cal-hint">${I.cal}${esc(t('cal.byDue'))}</span></div>
+      <div class="cal-tools"><div class="seg" role="group"><button data-act="cal-mode" data-m="month" aria-pressed="${r.mode==='month'}">${esc(t('cal.month'))}</button><button data-act="cal-mode" data-m="week" aria-pressed="${r.mode==='week'}">${esc(t('cal.week'))}</button></div>
+        <button class="btn sm" data-act="cal-ics" title="${esc(t('cal.icsTip'))}">${I.down}${esc(t('cal.ics'))}</button>
+        <button class="btn sm cal-und-btn" data-act="cal-undated" aria-pressed="${!!P.calUndated}">${esc(t('cal.undated'))}<span class="sec-meta">${undated.length}</span></button></div>
+    </div>
+    <div class="cal-body${P.calUndated ? ' with-und' : ''}">
+      <div class="cal-main"><div class="cal-grid ${r.mode}" role="grid"><div class="cal-wds">${heads}</div><div class="cal-days" style="--weeks:${r.days/7}">${cells}</div></div>${dayPanel}</div>
+      ${und}
+    </div>`;
+  // fit as many tasks per day as the month cells have room for
+  if (r.mode === 'month' && !mobile){
+    const cell = $('.cal-day', calview), head = cell && $('.cd-head', cell);
+    if (cell){ const room = cell.clientHeight - head.offsetHeight - 10, fit = {all:Math.max(1, Math.floor((room + 2) / 24)), more:Math.max(1, Math.floor((room - 14) / 24))};
+      if (fit.all !== calCap.all || fit.more !== calCap.more){ calCap = fit; renderCal(); } }
+  }
+}
+let calResize = 0;
+addEventListener('resize', ()=>{ clearTimeout(calResize); calResize = setTimeout(()=>{ if (screen === 'app' && P.view === 'cal' && !calDrag) renderCal(); }, 150); });
+/* ----- calendar file (.ics) for Outlook / Google / Apple calendars -----
+   Open tasks with a due date, as all-day events. Stable UIDs, so a calendar app that re-imports
+   the file can match the same task instead of adding a copy. */
+function icsText(s){ return String(s ?? '').replace(/\\/g,'\\\\').replace(/;/g,'\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n'); }
+function icsFold(line){
+  // lines are limited to 75 bytes (UTF-8); continue with CRLF + space, never splitting a character
+  const enc = new TextEncoder(); if (enc.encode(line).length <= 75) return line;
+  const out = []; let cur = '', n = 0, lim = 75;
+  for (const ch of line){ const b = enc.encode(ch).length; if (n + b > lim){ out.push(cur); cur = ' '; n = 1; lim = 75; } cur += ch; n += b; }
+  out.push(cur); return out.join('\r\n');
+}
+function exportIcs(){
+  const list = scopeIssues().filter(matches).filter(i=>i.due && !isDone(i)).sort((a,b)=>a.due.localeCompare(b.due));
+  if (!list.length) return toast(t('cal.icsNone'));
+  const stamp = new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d+/,'');
+  const d8 = s=>s.replace(/-/g,'');
+  const calName = `Workbench – ${isAll() ? (ws?.name || '') : (curBoard()?.name || '')}`;
+  const L = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//McCann Valley//Workbench//HE','CALSCALE:GREGORIAN','METHOD:PUBLISH', 'X-WR-CALNAME:' + icsText(calName)];
+  for (const i of list){
+    const b = boardOf(i), c = colOf(i);
+    const desc = [`${t('x.col.board')}: ${b?.name || ''}`, `${t('x.col.status')}: ${c?.name || ''}`, `${t('x.col.prio')}: ${prioName(i.priority)}`,
+      i.color ? `${t('x.col.plat')}: ${platLabelOf(i.color)}` : '', i.desc ? '\n' + i.desc.slice(0, 1500) : ''].filter(Boolean).join('\n');
+    L.push('BEGIN:VEVENT', `UID:${i.id}@workbench.mccann-valley`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${d8(i.due)}`, `DTEND;VALUE=DATE:${d8(addD(i.due, 1))}`,
+      `SEQUENCE:${Math.max(0, Math.floor((i.updated - 1.7e12) / 1000))}`, 'SUMMARY:' + icsText(`${key(i)} · ${i.title || t('issue.untitled')}`),
+      'DESCRIPTION:' + icsText(desc), 'CATEGORIES:' + icsText(b?.name || 'Workbench'), 'TRANSP:TRANSPARENT', 'END:VEVENT');
+  }
+  L.push('END:VCALENDAR');
+  const blob = new Blob([L.map(icsFold).join('\r\n') + '\r\n'], {type:'text/calendar;charset=utf-8'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `workbench-calendar-${today()}.ics`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 1500);
+  toast(tn('cal.icsDone', list.length), {ms:9000});
+}
+function calMoveDue(i, day){
+  if (!canEdit()) return;
+  const v = isISO(day) ? day : '';
+  if (v === i.due) return;
+  i.due = v; touch(i, v ? t('h.due', {date:fmtDay(v)}) : t('h.dueNone'));
+  fx.land = i.id; save(); render();
+  toast(v ? t('cal.moved', {key:key(i), date:fmtDay(v)}) : t('cal.cleared', {key:key(i)}), {action:t('btn.view'), fn:()=>openIssue(i.id)});
+}
+// drag a chip to a day (mouse: just drag; touch: press and hold)
+calview.addEventListener('pointerdown', e=>{
+  if (e.button !== 0 || !canEdit()) return;
+  const chip = e.target.closest('.cal-chip'); if (!chip) return;
+  calDrag = {chip, id:chip.dataset.id, sx:e.clientX, sy:e.clientY, x:e.clientX, y:e.clientY, touch:e.pointerType !== 'mouse', active:false, timer:0};
+  if (calDrag.touch) calDrag.timer = setTimeout(()=>{ if (calDrag && !calDrag.active) calBegin(); }, 300);
+});
+function calBegin(){
+  const d = calDrag, r = d.chip.getBoundingClientRect();
+  d.active = true; d.ox = d.sx - r.left; d.oy = d.sy - r.top;
+  if (d.touch && navigator.vibrate) navigator.vibrate(10);
+  const g = d.chip.cloneNode(true); g.classList.add('cal-ghost'); g.style.width = r.width+'px'; g.style.transform = `translate(${r.left}px,${r.top}px)`;
+  document.body.appendChild(g); d.ghost = g; d.chip.classList.add('dragging-src'); document.body.classList.add('dragging');
+}
+window.addEventListener('pointermove', e=>{
+  const d = calDrag; if (!d) return;
+  d.x = e.clientX; d.y = e.clientY;
+  if (!d.active){ const dist = Math.hypot(d.x-d.sx, d.y-d.sy); if (d.touch){ if (dist > 8){ clearTimeout(d.timer); calDrag = null; } } else if (dist > 5) calBegin(); return; }
+  d.ghost.style.transform = `translate(${d.x-d.ox}px,${d.y-d.oy}px)`;
+  const el = document.elementFromPoint(d.x, d.y), tgt = el?.closest?.('#calview [data-day]');
+  if (tgt !== d.tgt){ d.tgt?.classList.remove('drop-on'); d.tgt = tgt; tgt?.classList.add('drop-on'); }
+});
+document.addEventListener('touchmove', e=>{ if (calDrag?.active) e.preventDefault(); }, {passive:false});
+function calEnd(cancel){
+  const d = calDrag; if (!d) return; calDrag = null; clearTimeout(d.timer);
+  if (!d.active) return;
+  calSuppress = true; setTimeout(()=>{ calSuppress = false; }, 80);
+  d.ghost.remove(); d.chip.classList.remove('dragging-src'); document.body.classList.remove('dragging'); d.tgt?.classList.remove('drop-on');
+  if (cancel || !d.tgt) return;
+  const i = get(d.id); if (i) calMoveDue(i, d.tgt.dataset.day);
+}
+window.addEventListener('pointerup', ()=>calEnd(false));
+window.addEventListener('pointercancel', ()=>calEnd(true));
+calview.addEventListener('click', e=>{ if (calSuppress){ e.stopPropagation(); e.preventDefault(); return; }
+  const day = e.target.closest('.cal-day'); if (day && !e.target.closest('button') && isMobile()){ calSel = day.dataset.day; renderCal(); } }, true);
+calview.addEventListener('contextmenu', e=>{ if (e.target.closest('.cal-chip')) e.preventDefault(); });
+
 function renderSide(){
   const all = isAll(), b = curBoard(), edit = canEdit();
   const openCount = id=>S.issues.filter(i=>(id===ALL || i.boardId===id) && !i.archived && !isDone(i)).length || '';
@@ -1055,12 +1211,12 @@ function renderBell(){
 function render(){
   if (screen !== 'app') return;
   const v = P.view, all = isAll(), b = curBoard(), name = all ? t('nav.allBoards') : (b?.name || ws?.name || '');
-  board.hidden = v !== 'board'; listview.hidden = v !== 'list' && v !== 'archive'; sheetview.hidden = v !== 'table';
-  const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : v === 'table' ? t('view.tableOf', {name}) : name;
+  board.hidden = v !== 'board'; listview.hidden = v !== 'list' && v !== 'archive'; sheetview.hidden = v !== 'table'; calview.hidden = v !== 'cal';
+  const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : v === 'table' ? t('view.tableOf', {name}) : v === 'cal' ? t('view.calOf', {name}) : name;
   $('#viewTitle').innerHTML = `${!all && b && isImg(b.logo) ? `<span class="h1-logo"><img src="${esc(b.logo)}" alt=""></span>` : ''}<span data-bidi>${esc(title)}</span>`;
   $$('.side-item[data-view]').forEach(x=>x.classList.toggle('on', x.dataset.view===v));
   if (typeFilter && !S.types.some(x=>x.id===typeFilter)) typeFilter = null;
-  if (v === 'board') renderBoard(); else if (v === 'table') renderSheet(); else renderList(v === 'archive');
+  if (v === 'board') renderBoard(); else if (v === 'table') renderSheet(); else if (v === 'cal') renderCal(); else renderList(v === 'archive');
   renderSide();
   const pool = scopeIssues(), open = pool.filter(i=>!isDone(i)), tday = today();
   const over = open.filter(i=>i.due && i.due < tday).length;
@@ -1548,7 +1704,7 @@ function refreshIssue(){
 }
 
 /* ----- Create dialog ----- */
-function openCreate(status){
+function openCreate(status, opts={}){
   if (!canEdit()) return toast(t('toast.viewOnly'));
   if (!S.boards.length) return openBoardSettings(null);
   const b = isAll() ? (boardById(P.lastBoard?.[wsId]) || S.boards[0]) : curBoard();
@@ -1571,7 +1727,7 @@ function openCreate(status){
       <label class="fld">${esc(t('f.desc'))}<textarea name="desc" rows="3" data-bidi placeholder="${esc(t('create.descPh'))}"></textarea></label>
       <div class="grid3">
         <label class="fld">${esc(t('f.start'))}<input type="date" name="start" value="${today()}"></label>
-        <label class="fld">${esc(t('f.due'))}<input type="date" name="due"></label>
+        <label class="fld">${esc(t('f.due'))}<input type="date" name="due" value="${isISO(opts.due) ? opts.due : ''}"></label>
         <label class="fld">${esc(t('f.points'))}<input type="number" name="points" min="0" step="0.5" inputmode="decimal" placeholder="${esc(t('none'))}"></label>
       </div>
       <label class="fld">${esc(t('f.company'))}<input name="labels" data-bidi list="lblList2" value="${esc(normLabel(b.name))}" placeholder="${esc(t('company.commaPh'))}" autocomplete="off"><datalist id="lblList2">${companies.map(l=>`<option value="${esc(l)}">`).join('')}</datalist></label>
@@ -1888,7 +2044,7 @@ async function sendRequest(form){
 
 /* ----- Shortcuts ----- */
 function openShortcuts(){
-  const k = [['C','sc.create'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['T','sc.table'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
+  const k = [['C','sc.create'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['T','sc.table'],['K','sc.cal'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
   showModal(`${head(t('sc.title'))}<dl class="kbd-list">${k.map(([a,b])=>`<dt dir="ltr">${a.split(' ').map(x=>x==='+'?' + ':`<kbd>${x}</kbd>`).join('')}</dt><dd>${esc(t(b))}</dd>`).join('')}</dl>`, 'help', 'tiny');
 }
 
@@ -2080,13 +2236,13 @@ function updateComment(ta){
 }
 
 /* ================= Global click actions ================= */
-const EDIT_ACTS = new Set(['s-menu','s-set','ap-yes','ap-no','imp-add','imp-replace','new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
+const EDIT_ACTS = new Set(['cal-add','s-menu','s-set','ap-yes','ap-no','imp-add','imp-replace','new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
 document.addEventListener('click', async e=>{
   const b = e.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act;
   if (EDIT_ACTS.has(act) && screen === 'app' && !canEdit()){ toast(t('toast.viewOnly')); return; }
   const inPop = !!b.closest('#pop');
-  const ctxId = inPop ? pop.dataset.id : (b.dataset.id || openId);
+  const ctxId = inPop ? (b.dataset.id || pop.dataset.id) : (b.dataset.id || openId);
   const i = ctxId && get(ctxId);
   switch(act){
     /* account & workspaces */
@@ -2174,6 +2330,17 @@ document.addEventListener('click', async e=>{
     case 'card-menu': openPop(b, statusMenu(i, true), i.id); break;
     case 'status-menu': openPop(b, statusMenu(i, false), i.id); break;
     case 's-menu': if (i) openPop(b, sheetMenu(i, b.dataset.sf), i.id); break;
+    case 'cal-ics': exportIcs(); break;
+    case 'cal-today': calAnchor = today(); calSel = today(); renderCal(); break;
+    case 'cal-step': { const r = calRange(), n = Number(b.dataset.n) || 0, a = new Date((calAnchor || today())+'T12:00');
+      if (r.mode === 'week') a.setDate(a.getDate() + 7*n); else { a.setDate(1); a.setMonth(a.getMonth() + n); }
+      calAnchor = iso(a); calSel = null; renderCal(); break; }
+    case 'cal-mode': P.calMode = b.dataset.m === 'week' ? 'week' : 'month'; calAnchor = calSel || calAnchor; savePrefs(); renderCal(); break;
+    case 'cal-undated': P.calUndated = !P.calUndated; savePrefs(); renderCal(); break;
+    case 'cal-sel': calSel = b.dataset.day; if (P.calMode === 'week' || !isMobile()) { if (!isMobile()){ calAnchor = calSel; P.calMode = 'week'; savePrefs(); } } renderCal(); break;
+    case 'cal-add': openCreate(null, {due:b.dataset.day}); break;
+    case 'cal-day': { const d = b.dataset.day, list = scopeIssues().filter(matches).filter(x=>x.due===d).sort(calSort);
+      openPop(b, `<div class="menu-h">${esc(fmtr('wdl', {weekday:'long', day:'numeric', month:'long'}).format(new Date(d+'T12:00')))}</div><div class="cal-pop">${list.map(x=>calChip(x,'row')).join('')}</div>`, ''); break; }
     case 's-set': closePop(); if (i) sheetSet(i, b.dataset.sf, b.dataset.v); break;
     case 's-sort': { const k = b.dataset.k; sheetSort = sheetSort.k !== k ? {k, dir:1} : sheetSort.dir > 0 ? {k, dir:-1} : {k:null, dir:1}; render(); break; }
     case 'set-status': {
@@ -2338,6 +2505,7 @@ document.addEventListener('keydown', e=>{
   else if (k === 'b' || code === 'KeyB'){ P.view = 'board'; savePrefs(); render(); }
   else if (k === 'l' || code === 'KeyL'){ P.view = 'list'; savePrefs(); render(); }
   else if (k === 't' || code === 'KeyT'){ P.view = 'table'; savePrefs(); render(); }
+  else if (k === 'k' || code === 'KeyK'){ P.view = 'cal'; savePrefs(); render(); }
   else if (k === 'a' || code === 'KeyA'){ if (S.boards.length) switchBoard(ALL); }
   else if (e.key === '?'){ openShortcuts(); }
 });
@@ -2354,7 +2522,7 @@ function toast(msg, opt={}){
   let gone = false;
   const close = ()=>{ if (gone) return; gone = true; el.classList.add('out'); setTimeout(()=>el.remove(), reduce?0:200); };
   if (opt.action) $('button',el).onclick = ()=>{ close(); opt.fn(); };
-  let timer = setTimeout(close, opt.action ? 6000 : 3200);
+  let timer = setTimeout(close, opt.ms || (opt.action ? 6000 : 3200));
   el.onmouseenter = ()=>clearTimeout(timer);
   el.onmouseleave = ()=>{ timer = setTimeout(close, 2000); };
 }
@@ -2623,7 +2791,7 @@ function relocalize(){
 
 /* ================= Init ================= */
 $$('[data-i]').forEach(el=>el.insertAdjacentHTML('afterbegin', I[el.dataset.i]));
-if (!['board','list','table','archive'].includes(P.view)) P.view = 'board';
+if (!['board','list','table','cal','archive'].includes(P.view)) P.view = 'board';
 setLang(getLang()); staticText(); setTheme(null); applyShell();
 renderLoading();
 setInterval(()=>{ if (screen === 'app' && !drag && !modalKind && !composer && !popAnchor) render(); }, 60000);

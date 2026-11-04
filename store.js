@@ -11,7 +11,8 @@ export async function createStore(){
 
 const lower = s=>String(s||'').trim().toLowerCase();
 const randomId = (n=20)=>{ const a = new Uint8Array(n), c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'; crypto.getRandomValues(a); return [...a].map(x=>c[x % 62]).join(''); };
-const userOf = u=>u && {uid:u.uid, email:lower(u.email), name:u.displayName || u.email || '', photo:u.photoURL || ''};
+const userOf = u=>u && {uid:u.uid, email:lower(u.email), name:u.displayName || u.email || '',
+  photo:u.photoURL || (u.providerData || []).map(p=>p && p.photoURL).find(Boolean) || ''}; // Google sometimes leaves the top-level photo empty
 
 /* ======================= Firebase ======================= */
 async function firebaseStore(){
