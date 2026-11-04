@@ -156,6 +156,7 @@ const I = {
   menu:ic('<path d="M4 7h16M4 12h16M4 17h16"/>'),
   board:ic('<rect x="4" y="4" width="4.5" height="16" rx="1"/><rect x="9.75" y="4" width="4.5" height="11" rx="1"/><rect x="15.5" y="4" width="4.5" height="7" rx="1"/>'),
   list:ic('<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>'),
+  funnel:ic('<path d="M4 5h16l-6.2 7.4V19l-3.6-1.8v-4.8z"/>'),
   table:ic('<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10"/>'),
   down:ic('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
   up:ic('<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>'),
@@ -478,7 +479,7 @@ function resolveStatus(b, status){
   return b.columns.find(c=>c.name.trim().toLowerCase()===k) || (v && b.columns.find(c=>c.cat===v.cat)) || null;
 }
 
-let query = '', qf = new Set(), typeFilter = null, platFilter = null, openId = null, tab = 'comments', cmtDraft = '', editingCid = null, lastPct = null;
+let qTimer = 0, query = '', qf = new Set(), typeFilter = null, platFilter = null, openId = null, tab = 'comments', cmtDraft = '', editingCid = null, lastPct = null;
 let lastCreateType = null;
 let composer = null, composerText = '', composerType = null, composerBoard = null, composerFocus = false;
 let sortBy = {k:'status', dir:1};
@@ -900,6 +901,94 @@ function sheetCell(i, k, edit){
   }
   return '<td></td>';
 }
+/* ----- per-column filters in the table (like a spreadsheet filter) -----
+   Lists of values with check marks for status, priority, client, type, platform, company, creator,
+   date ranges and subtasks; "contains" text for the task name and the description. */
+let sheetF = {};
+const SF_KIND = {status:'list', prio:'list', board:'list', type:'list', plat:'list', company:'list', by:'list', start:'list', due:'list', subs:'list', title:'text', desc:'text'};
+function sfDateFacets(v, due, done){
+  if (!v) return ['none'];
+  const tday = today(), out = [];
+  if (due && v < tday && !done) out.push('over');
+  if (v === tday) out.push('today');
+  if (v >= tday && v <= addDays(7)) out.push('week');
+  if (v.slice(0,7) === tday.slice(0,7)) out.push('month');
+  out.push(v < tday ? 'past' : v > tday ? 'future' : 'todayx');
+  return out;
+}
+function sfFacets(i, k){
+  switch(k){
+    case 'status': return [colOf(i)?.name || ''];
+    case 'prio': return [i.priority];
+    case 'board': return [i.boardId];
+    case 'type': return [i.type];
+    case 'plat': return [i.color || ''];
+    case 'company': return i.labels.length ? i.labels.map(normLabel) : [''];
+    case 'by': { const c = creatorOf(i); return [c ? (c.name || c.email) : '']; }
+    case 'start': return sfDateFacets(i.start, false, isDone(i));
+    case 'due': return sfDateFacets(i.due, true, isDone(i));
+    case 'subs': { const n = i.subtasks.length, d = i.subtasks.filter(x=>x.done).length; return [!n ? 'none' : d === n ? 'done' : 'open']; }
+  }
+  return [];
+}
+function sfMatchOne(i, k){
+  const f = sheetF[k]; if (!f) return true;
+  if (SF_KIND[k] === 'text') return lower(k === 'title' ? i.title : i.desc).includes(lower(f));
+  return sfFacets(i, k).some(v=>f.has(v));
+}
+const sheetMatch = (i, skip)=>Object.keys(sheetF).every(k=>k === skip || sfMatchOne(i, k));
+const sheetFCount = ()=>Object.values(sheetF).filter(Boolean).length;
+const sheetFKey = ()=>Object.entries(sheetF).filter(([,v])=>v).map(([k,v])=>k + '=' + (typeof v === 'string' ? v : [...v].sort().join('/'))).join(';');
+function sfLabel(k, v){
+  if (k === 'status') return v || '—';
+  if (k === 'prio') return prioName(v);
+  if (k === 'board') return boardById(v)?.name || '—';
+  if (k === 'type') return typeOf(v).name;
+  if (k === 'plat') return v ? platLabelOf(v) : t('filter.noPlatform');
+  if (k === 'company') return v || t('sf.empty');
+  if (k === 'by') return v || t('sf.unknown');
+  if (k === 'start' || k === 'due') return t('sf.d.' + v);
+  if (k === 'subs') return t('sf.s.' + v);
+  return v;
+}
+function sfOptions(k, pool){
+  const counts = new Map();
+  pool.forEach(i=>sfFacets(i, k).forEach(v=>counts.set(v, (counts.get(v) || 0) + 1)));
+  let order;
+  if (k === 'prio') order = PRIOS;
+  else if (k === 'status'){ const seen = []; (isAll() ? S.boards : [curBoard()]).forEach(b=>b?.columns.forEach(c=>{ if (!seen.includes(c.name)) seen.push(c.name); })); order = seen; }
+  else if (k === 'board') order = S.boards.map(b=>b.id);
+  else if (k === 'type') order = S.types.map(x=>x.id);
+  else if (k === 'start') order = ['today','week','month','past','future'];
+  else if (k === 'due') order = ['over','today','week','month','future','none'];
+  else if (k === 'subs') order = ['open','done','none'];
+  else order = [...counts.keys()].sort((a, b)=>(!a) - (!b) || sfLabel(k, a).localeCompare(sfLabel(k, b)));
+  const f = sheetF[k];
+  return order.filter(v=>counts.has(v) || f?.has(v)).map(v=>({v, n:counts.get(v) || 0}));
+}
+function sheetFilterMenu(k){
+  const b = curBoard(), all = isAll(), name = t('x.col.' + k);
+  const pool = S.issues.filter(i=>!i.archived && (all || i.boardId === b?.id)).filter(matches).filter(i=>sheetMatch(i, k));
+  if (SF_KIND[k] === 'text') return `<div class="menu-h">${esc(t('sf.by', {col:name}))}</div><div class="pop-pad sf-text"><input class="inp" data-k="s-ftext" data-col="${k}" value="${esc(sheetF[k] || '')}" placeholder="${esc(t('sf.contains'))}" data-bidi autocomplete="off"></div>
+    ${sheetF[k] ? `<div class="menu-sep"></div><button class="menu-i" role="menuitem" data-act="s-fclear" data-k="${k}">${I.x}${esc(t('sf.clearCol'))}</button>` : ''}`;
+  const f = sheetF[k], opts = sfOptions(k, pool);
+  const dot = v=>k === 'plat' ? `<i class="pf-dot${v ? '' : ' none'}"${v ? ` style="--sw:${v}"` : ''}></i>` : k === 'type' ? typeSVG(typeOf(v)) : k === 'prio' ? prioIcon(v) : k === 'board' ? bAv(boardById(v), 'xs') : '';
+  return `<div class="menu-h">${esc(t('sf.showOnly', {col:name}))}</div>
+    <button class="menu-i" role="menuitem" data-act="s-fall" data-k="${k}"><span class="sf-box${!f ? ' on' : ''}">${!f ? I.check : ''}</span>${esc(t('sf.all'))}</button>
+    <div class="sf-list">${opts.map(o=>`<button class="menu-i" role="menuitemcheckbox" aria-checked="${!!f?.has(o.v)}" data-act="s-fval" data-k="${k}" data-v="${esc(o.v)}"><span class="sf-box${f?.has(o.v) ? ' on' : ''}">${f?.has(o.v) ? I.check : ''}</span>${dot(o.v)}<span class="sf-l" data-bidi>${esc(sfLabel(k, o.v))}</span><span class="sf-n">${o.n}</span></button>`).join('') || `<p class="muted-p pop-pad">${esc(t('sf.none'))}</p>`}</div>`;
+}
+function sheetFRefresh(k){
+  render();
+  // the header was rebuilt: re-attach the open menu to the new filter button and redraw it
+  const btn = $(`.s-filt[data-k="${CSS.escape(k)}"]`, sheetview);
+  if (popAnchor && btn){ popAnchor = btn; btn.setAttribute('aria-expanded', 'true'); pop.innerHTML = sheetFilterMenu(k); placePop(); }
+}
+function sheetFBar(){
+  const act = Object.entries(sheetF).filter(([,v])=>v); if (!act.length) return '';
+  return `<div class="s-fbar">${I.funnel}${act.map(([k, v])=>`<span class="s-fchip"><b>${esc(t('x.col.' + k))}:</b> <span data-bidi>${esc(typeof v === 'string' ? `"${v}"` : [...v].map(x=>sfLabel(k, x)).join(', '))}</span><button class="btn icon subtle sm" data-act="s-fclear" data-k="${k}" aria-label="${esc(t('sf.clearCol'))}">${I.x}</button></span>`).join('')}
+    ${act.length > 1 ? `<button class="link-btn" data-act="s-fclear">${esc(t('sf.clearAll'))}</button>` : ''}</div>`;
+}
+
 const SHEET_PAGE = 150; // rows are added as you scroll, so big boards open fast (500 rows at once took ~0.6s)
 let sheetLimit = SHEET_PAGE, sheetIO = null;
 function renderSheet(){
@@ -908,13 +997,13 @@ function renderSheet(){
   const cols = sheetCols();
   const bIx = new Map(S.boards.map((x,ix)=>[x.id, x.order ?? ix]));
   const colIx = i=>{ const bb = boardOf(i); return bb ? bb.columns.findIndex(c=>c.id===i.status) : 0; };
-  let vis = S.issues.filter(i=>!i.archived && (all || i.boardId===b.id)).filter(matches).map((i,ix)=>[i,ix]);
+  let vis = S.issues.filter(i=>!i.archived && (all || i.boardId===b.id)).filter(matches).filter(i=>sheetMatch(i)).map((i,ix)=>[i,ix]);
   if (sheetSort.k){ const k = sheetSort.k, d = sheetSort.dir, E = '￿';
     vis.sort((a,c)=>{ const x = sheetVal(a[0],k), y = sheetVal(c[0],k); if (x===y) return a[1]-c[1]; if (x===E || x===2 && k==='subs') return 1; if (y===E || y===2 && k==='subs') return -1; return (x<y?-1:1)*d; }); } // empty cells always last
   else vis.sort((a,c)=>((bIx.get(a[0].boardId)??0)-(bIx.get(c[0].boardId)??0)) || (colIx(a[0])-colIx(c[0])) || (a[0].rank-c[0].rank) || a[1]-c[1]);
   vis = vis.map(x=>x[0]);
   const scope = wsId + (all ? ALL : b.id);
-  const layoutKey = [scope, cols.join(','), sheetSort.k, sheetSort.dir, edit, getLang(), query, [...qf].join(), typeFilter, platFilter].join('|');
+  const layoutKey = [scope, cols.join(','), sheetSort.k, sheetSort.dir, edit, getLang(), query, [...qf].join(), typeFilter, platFilter, sheetFKey()].join('|');
   if (!sheetCache || sheetCache.key !== layoutKey) sheetLimit = SHEET_PAGE;
   if (fx.new){ const ix = vis.findIndex(i=>i.id===fx.new); if (ix >= sheetLimit) sheetLimit = ix + 20; } // a task just created is always shown
   const shown = vis.slice(0, sheetLimit), more = vis.length - shown.length;
@@ -942,11 +1031,12 @@ function renderSheet(){
   if (foc && foc !== 'add' && sheetCache && tb){ sheetPending = true; return; } // rows added/removed/re-ordered: rebuild once the edit is done
   const addVal = foc === 'add' ? a.value : null;
   const same = sheetCache && sheetCache.scope === scope, sx = same ? sheetview.scrollLeft : 0, sy = same ? sheetview.scrollTop : 0;
-  const head = cols.map(k=>`<th class="h-${k}"><button data-act="s-sort" data-k="${k}" class="${sheetSort.k===k?'on':''}${sheetSort.k===k&&sheetSort.dir<0?' desc':''}">${esc(t('x.col.'+k))}${I.arrow}</button></th>`).join('');
-  const empty = !rows.length ? `<tr class="s-empty"><td colspan="${cols.length}">${esc(filtering() ? t('empty.listFiltered') : t('sheet.empty'))}</td></tr>` : '';
+  const head = cols.map(k=>`<th class="h-${k}"><div class="th-in"><button data-act="s-sort" data-k="${k}" class="th-sort ${sheetSort.k===k?'on':''}${sheetSort.k===k&&sheetSort.dir<0?' desc':''}">${esc(t('x.col.'+k))}${I.arrow}</button>${SF_KIND[k] ? `<button class="s-filt${sheetF[k] ? ' on' : ''}" data-act="s-filter" data-k="${k}" aria-haspopup="menu" aria-label="${esc(t('sf.by', {col:t('x.col.'+k)}))}" title="${esc(t('sf.by', {col:t('x.col.'+k)}))}">${I.funnel}</button>` : ''}</div></th>`).join('');
+  const fbar = sheetFBar();
+  const empty = !rows.length ? `<tr class="s-empty"><td colspan="${cols.length}">${esc(filtering() || sheetFCount() ? t('empty.listFiltered') : t('sheet.empty'))}</td></tr>` : '';
   // the add bar lives outside the table: a sticky table footer cell drew as a blank box over the name column in iOS Safari
   const add = edit ? `<form data-form="sheet-add" class="s-addbar">${I.plus}<input data-k="sheet-add" placeholder="${esc(all ? t('sheet.addIn', {board:(boardById(P.lastBoard?.[wsId]) || S.boards[0]).name}) : t('sheet.add'))}" data-bidi autocomplete="off" enterkeyhint="done" aria-label="${esc(t('sheet.add'))}"></form>` : '';
-  sheetview.innerHTML = `<table class="sheet${all?' all':''}"><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody></table>${add}`;
+  sheetview.innerHTML = fbar + `<table class="sheet${all?' all':''}"><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody></table>${add}`;
   sheetview.scrollLeft = sx; sheetview.scrollTop = sy;
   if (addVal != null){ const ad = $('[data-k="sheet-add"]', sheetview); if (ad){ ad.value = addVal; ad.focus({preventScroll:true}); } }
   sheetCache = {key:layoutKey, order, html:new Map(rows), scope};
@@ -1261,7 +1351,7 @@ function render(){
   tf.innerHTML = esc(typeFilter ? t('filter.typeIs', {name:typeOf(typeFilter).name}) : t('filter.type')) + I.chev;
   const pf = $('#platF'); pf.setAttribute('aria-pressed', !!platFilter);
   pf.innerHTML = (platFilter === 'none' ? esc(t('filter.noPlatform')) : platFilter ? `<i class="pf-dot" style="--sw:${platFilter}"></i>${esc(colorName(platFilter))}` : esc(t('filter.platform'))) + I.chev;
-  $('#clearF').hidden = !filtering();
+  $('#clearF').hidden = !filtering() && !(v === 'table' && sheetFCount());
   $('#createBtn').hidden = !canEdit() || !S.boards.length;
   fx = {};
 }
@@ -1496,6 +1586,14 @@ document.addEventListener('pointerdown', e=>{
 
 /* ================= Popover ================= */
 const pop = $('#pop'); let popAnchor = null;
+// typing in a table column's "contains" filter
+let sfTimer = 0;
+pop.addEventListener('input', e=>{
+  const el = e.target; if (el.dataset?.k !== 's-ftext') return;
+  const k = el.dataset.col, v = el.value.trim();
+  clearTimeout(sfTimer); sheetF[k] = v || undefined;
+  sfTimer = setTimeout(()=>{ render(); const btn = $(`.s-filt[data-k="${CSS.escape(k)}"]`, sheetview); if (popAnchor && btn){ popAnchor = btn; btn.setAttribute('aria-expanded','true'); placePop(); } el.focus(); }, 160);
+});
 function openPop(anchor, html, id){
   if (popAnchor === anchor){ closePop(); return; }
   closePop();
@@ -2359,7 +2457,11 @@ document.addEventListener('click', async e=>{
         <button class="menu-i" role="menuitem" data-act="plat-filter" data-p="none"><i class="pf-dot none"></i>${esc(t('filter.noPlatform'))}${chk(platFilter==='none')}</button>`, '');
       break;
     case 'plat-filter': platFilter = b.dataset.p || null; closePop(); render(); break;
-    case 'clear-filters': qf.clear(); typeFilter = null; platFilter = null; query = ''; $('#q').value = ''; render(); break;
+    case 'clear-filters': qf.clear(); typeFilter = null; platFilter = null; query = ''; $('#q').value = ''; sheetF = {}; render(); break;
+    case 's-filter': openPop(b, sheetFilterMenu(b.dataset.k), 'sf:' + b.dataset.k); break;
+    case 's-fval': { const k = b.dataset.k, v = b.dataset.v; const set = new Set(sheetF[k] || []); set.has(v) ? set.delete(v) : set.add(v); sheetF[k] = set.size ? set : undefined; sheetFRefresh(k); break; }
+    case 's-fall': { sheetF[b.dataset.k] = undefined; sheetFRefresh(b.dataset.k); break; }
+    case 's-fclear': { if (b.dataset.k) sheetF[b.dataset.k] = undefined; else sheetF = {}; closePop(); render(); break; }
 
     /* issues */
     case 'add-inline': openComposer(b.dataset.status); break;
@@ -2545,7 +2647,8 @@ document.addEventListener('keydown', e=>{
   else if (k === 'a' || code === 'KeyA'){ if (S.boards.length) switchBoard(ALL); }
   else if (e.key === '?'){ openShortcuts(); }
 });
-$('#q').addEventListener('input', e=>{ query = e.target.value; render(); });
+// debounced: with hundreds of tasks a render on every keystroke made typing lag on phones
+$('#q').addEventListener('input', e=>{ query = e.target.value; clearTimeout(qTimer); qTimer = setTimeout(render, query ? 140 : 0); });
 
 /* ================= Toasts ================= */
 function toast(msg, opt={}){

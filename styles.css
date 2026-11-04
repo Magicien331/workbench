@@ -1123,3 +1123,27 @@ button.chip.plain:hover,button.chip.plat:hover{background:var(--hover);filter:no
 
 .toast{touch-action:none;user-select:none;-webkit-user-select:none} /* swipe to dismiss */
 .toast .btn{touch-action:manipulation}
+
+/* table column filters */
+.sheet th .th-in{display:flex;align-items:stretch;height:100%}
+.sheet th .th-in .th-sort{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.sheet th .s-filt{flex:none;width:28px;padding:0;justify-content:center;color:var(--text-subtlest);opacity:.55;border-radius:var(--r-sm)}
+.sheet th .s-filt .i{opacity:1;width:14px;height:14px}
+.sheet th:hover .s-filt,.sheet th .s-filt:focus-visible,.sheet th .s-filt[aria-expanded="true"]{opacity:1}
+.sheet th .s-filt:hover{background:var(--hover);color:var(--text)}
+.sheet th .s-filt.on{opacity:1;color:var(--brand-text);background:var(--brand-subtle)}
+@media (hover:none){ .sheet th .s-filt{opacity:.85} }
+.s-fbar{position:sticky;inset-inline-start:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);background:var(--raised);color:var(--text-sub);font-size:12px}
+.s-fbar > .i{width:14px;height:14px;color:var(--brand-text)}
+.s-fchip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 2px 2px 8px;border-radius:999px;background:var(--brand-subtle);color:var(--brand-text)}
+[dir="rtl"] .s-fchip{padding:2px 8px 2px 2px}
+.s-fchip > span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
+.s-fchip .btn.icon.sm{width:20px;height:20px}
+.sf-list{max-height:min(320px, 55vh);overflow-y:auto}
+.sf-box{width:16px;height:16px;flex:none;display:grid;place-items:center;border-radius:4px;box-shadow:inset 0 0 0 1.5px var(--input-border);color:#fff}
+.sf-box.on{background:var(--brand);box-shadow:none}
+.sf-box .i{width:12px;height:12px}
+.sf-l{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sf-n{font-size:12px;color:var(--text-subtlest);font-variant-numeric:tabular-nums}
+.sf-text{min-width:240px}
+.sf-text .inp{width:100%}
