@@ -2795,7 +2795,7 @@ function planTracker({sheet, hm}){
     if (!b && !cw){ b = fallbackBoard; bKey = b?.id; }
     if (!bKey) return;
     const cols = b ? b.columns : tplCols, sw = str(r, 'status');
-    let col = trkColumn(cols, sw);
+    let col = sw ? trkColumn(cols, sw) : null;
     if (!col && sw){ const ck = bKey + '|' + loose(sw); if (!newCols.has(ck)) newCols.set(ck, {bKey, name:sw, cat:TRK_STATUS[sw] || 'doing'}); }
     const pw = str(r, 'prio'), prio = TRK_PRIO_IN[norm(pw)] || (pw ? 'medium' : null);
     const docCell = get(r, 'docs'), docText = String(docCell ?? '').trim(), docUrl = sheet.links?.[`${k+1},${hm.docs}`] || '';
@@ -2808,15 +2808,17 @@ function planTracker({sheet, hm}){
       links, notes:[String(get(r, 'notes') ?? '').trim(), docNote ? `${TRACKER.head[6]}: ${docNote}` : ''].filter(Boolean).join('\n'), alias:b && cw && !sameText(b.name, cw) && !(b.alias && sameText(b.alias, cw)) ? cw : null};
     // same client + same name = the same task
     const ex = b ? S.issues.find(i=>!used.has(i.id) && i.boardId === b.id && sameText(i.title, title)) : null;
-    if (ex){ used.add(ex.id); row.id = ex.id; row.changed = trkChanged(ex, row); }
+    if (ex){ used.add(ex.id); row.id = ex.id; row.changed = trkChanged(ex, row);
+      row.kept = (!row.statusWord ? 1 : 0) + (!row.prio ? 1 : 0) + (!row.due && ex.due ? 1 : 0) + (!row.notes && ex.desc.trim() ? 1 : 0); }
     rows.push(row);
   });
   return {rows, newBoards, newCols, sheetName:sheet.name};
 }
+// an empty cell never clears anything on the site: only filled cells update a task
 function trkChanged(i, r){
   const col = colOf(i);
-  return (r.prio && TRK_PRIO_OUT[i.priority] !== TRK_PRIO_OUT[r.prio]) || (r.colId ? r.colId !== i.status : !!r.statusWord && statusWord(col) !== r.statusWord)
-    || (r.start && r.start !== i.start) || (r.due || '') !== (i.due || '') || (r.notes || '') !== (i.desc || '').trim()
+  return (r.prio && TRK_PRIO_OUT[i.priority] !== TRK_PRIO_OUT[r.prio]) || (!!r.statusWord && (r.colId ? r.colId !== i.status : statusWord(col) !== r.statusWord))
+    || (r.start && r.start !== i.start) || (r.due && r.due !== i.due) || (r.notes && r.notes !== (i.desc || '').trim())
     || r.links.some(l=>!i.links.some(x=>x.url === l.url));
 }
 let trackerPending = null;
@@ -2829,6 +2831,7 @@ function openTrackerImport(plan){
       <ul class="trk-sum"><li><b>${add}</b> ${esc(t('trk.new'))}</li><li><b>${upd}</b> ${esc(t('trk.upd'))}</li>${same ? `<li><b>${same}</b> ${esc(t('trk.same'))}</li>` : ''}</ul>
       ${nb.length ? `<p class="confirm-p">${esc(t('trk.newBoards'))} <b data-bidi>${esc(nb.join(', '))}</b></p>` : ''}
       ${nc.length ? `<p class="confirm-p">${esc(t('trk.newCols'))} <b data-bidi>${esc(nc.join(', '))}</b></p>` : ''}
+      ${(k=>k ? `<p class="confirm-p">${esc(tn('trk.kept', k))}</p>` : '')(plan.rows.reduce((n, r)=>n + (r.kept || 0), 0))}
       <p class="confirm-p muted-p">${esc(t('trk.keep'))}</p></div>
     <div class="m-foot"><span class="sp"></span><button class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button><button class="btn primary" data-act="trk-apply">${esc(t('trk.apply'))}</button></div>`, 'confirm', 'narrow');
   dlg.setAttribute('aria-label', t('trk.title'));
@@ -2856,17 +2859,19 @@ function applyTracker(){
   plan.rows.forEach((r, ix)=>{
     const b = boardOfKey.get(r.bKey); if (!b) return;
     if (r.alias && !b.alias) b.alias = r.alias;
-    const col = colFor(b, r.statusWord);
     if (r.id){
-      const i = get(r.id); if (!i || !trkChanged(i, {...r, colId:col.id})) return;
+      const i = get(r.id); if (!i) return;
+      const col = r.statusWord ? colFor(b, r.statusWord) : null;
+      if (!trkChanged(i, {...r, colId:col?.id || null})) return;
       if (r.prio && TRK_PRIO_OUT[i.priority] !== TRK_PRIO_OUT[r.prio]) i.priority = r.prio;
-      if (col.id !== i.status){ const was = colOf(i); i.status = col.id; if (col.cat === 'done' && was?.cat !== 'done') i.doneAt = now; if (col.cat !== 'done') i.doneAt = null; }
+      if (col && col.id !== i.status){ const was = colOf(i); i.status = col.id; if (col.cat === 'done' && was?.cat !== 'done') i.doneAt = now; if (col.cat !== 'done') i.doneAt = null; }
       if (r.start) i.start = r.start;
-      i.due = r.due || '';
-      if ((r.notes || '') !== i.desc.trim()) i.desc = r.notes || '';
+      if (r.due) i.due = r.due;
+      if (r.notes && r.notes !== i.desc.trim()) i.desc = r.notes;
       r.links.forEach(l=>{ if (!i.links.some(x=>x.url === l.url)) i.links.push({id:uid(), url:l.url, title:l.title}); });
       touch(i, t('trk.hist', {sheet:plan.sheetName})); changed++;
     } else {
+      const col = colFor(b, r.statusWord);
       b.seq = Math.max(b.seq || 0, ...S.issues.filter(x=>x.boardId === b.id).map(x=>x.num)) + 1;
       const i = normIssue('i-'+uid(), {boardId:b.id, num:b.seq, type:S.types[0]?.id, title:r.title, status:col.id, priority:r.prio || 'medium',
         start:r.start || today(), due:r.due || '', desc:r.notes || '', labels:[normLabel(b.name)], links:r.links.map(l=>({id:uid(), ...l})),
