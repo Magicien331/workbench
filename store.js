@@ -93,6 +93,11 @@ async function firebaseStore(){
       }
     },
 
+    // the activity history: newest "act_…" documents first (their names sort by time)
+    async listActivity(wsId, n=500){
+      const q = F.query(col('workspaces', wsId, 'meta'), F.where(F.documentId(), '>=', 'act_'), F.where(F.documentId(), '<', 'act`'), F.orderBy(F.documentId(), 'desc'), F.limit(n));
+      return docs(await F.getDocs(q)).map(d=>({id:d.id, ...d.data}));
+    },
     // access requests
     async createRequest(data){
       const r = ref('requests', data.fromUid + '_' + data.toEmail);
@@ -169,11 +174,13 @@ function demoStore(){
       const w = db.workspaces[wsId]; if (!w || !canWrite(w, me())) return deny();
       const d = db.data[wsId];
       ops.forEach(o=>{
+        if (o.col === 'meta' && o.id !== 'settings'){ d.act = d.act || {}; if (o.type === 'del') delete d.act[o.id]; else d.act[o.id] = clone(o.data); return; }
         if (o.col === 'meta'){ d.meta = o.type === 'del' ? null : clone(o.data); return; }
         if (o.type === 'del') delete d[o.col][o.id]; else d[o.col][o.id] = clone(o.data);
       });
       persist();
     },
+    async listActivity(wsId, n=500){ const d = db.data[wsId]; if (!d || !canRead(db.workspaces[wsId], me())) return deny(); return Object.entries(d.act || {}).sort((a, b)=>a[0] < b[0] ? 1 : -1).slice(0, n).map(([id, x])=>({id, ...clone(x)})); },
     async createRequest(data){ const id = data.fromUid + '_' + data.toEmail; delete db.requests[id]; db.requests[id] = clone(data); persist(); },
     watchIncoming(email, cb){ return sub(()=>cb(Object.entries(db.requests).filter(([,r])=>r.toEmail === email).map(([id,r])=>({id, ...clone(r)})))); },
     watchOutgoing(u, cb){ return sub(()=>cb(Object.entries(db.requests).filter(([,r])=>r.fromUid === u).map(([id,r])=>({id, ...clone(r)})))); },

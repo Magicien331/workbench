@@ -178,6 +178,7 @@ const I = {
   copy:ic('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>'),
   open:ic('<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
   clock:ic('<circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2"/>'),
+  history:ic('<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 4v4.5H8"/><path d="M12 7.5V12l3 2"/>'),
   arrow:ic('<path d="M12 19V5M6 11l6-6 6 6"/>'),
   aup:ic('<path d="M7 14l5-5 5 5"/>'),
   adown:ic('<path d="M7 10l5 5 5-5"/>'),
@@ -577,6 +578,9 @@ function flush(){
   }
   const mj = stable(serMeta());
   if (synced.meta !== mj){ ops.push({type:'set', col:'meta', id:'settings', data:serMeta()}); synced.meta = mj; }
+  // the activity history: one small document per action, written with everything else
+  actQ.filter(a=>a.ws === wsId).forEach(a=>ops.push({type:'set', col:'meta', id:a.id, data:a.data}));
+  actQ = actQ.filter(a=>a.ws !== wsId);
   if (!ops.length) return;
   const target = wsId;
   store.commit(target, ops).catch(err=>{
@@ -2026,6 +2030,7 @@ function render(){
   if (typeFilter && !S.types.some(x=>x.id===typeFilter)) typeFilter = null;
   if (v === 'board') renderBoard(); else if (v === 'table') renderSheet(); else if (v === 'cal') renderCal(); else if (v === 'dash') renderDash(); else renderList(v === 'archive');
   renderSide();
+  if (modalKind === 'activity') actRefresh();
   const pool = scopeIssues(), open = pool.filter(i=>!isDone(i)), tday = today();
   const over = open.filter(i=>i.due && i.due < tday).length;
   const arch = S.issues.filter(i=>i.archived && (all || (b && i.boardId===b.id))).length;
@@ -2101,8 +2106,9 @@ function deleteIssue(id){
   const ix = S.issues.findIndex(i=>i.id===id); if (ix < 0) return;
   const [i] = S.issues.splice(ix,1);
   if (openId === id) closeModal(true);
+  logAct('act.del', {key:key(i), title:i.title, board:boardOf(i)?.name || ''}, {boardId:i.boardId});
   save(); render();
-  toast(t('toast.deleted', {key:key(i)}), {action:t('btn.undo'), fn:()=>{ if (!boardById(i.boardId)) return toast(t('toast.boardGone')); S.issues.splice(Math.min(ix,S.issues.length),0,i); i.rank = undefined; fx.new = i.id; save(); render(); }});
+  toast(t('toast.deleted', {key:key(i)}), {action:t('btn.undo'), fn:()=>{ if (!boardById(i.boardId)) return toast(t('toast.boardGone')); S.issues.splice(Math.min(ix,S.issues.length),0,i); i.rank = undefined; fx.new = i.id; logAct('act.undel', {key:key(i), title:i.title}, {issueId:i.id, boardId:i.boardId}); save(); render(); }});
 }
 function setColor(i, c){
   i.color = isHex(c) ? c : null;
@@ -2894,11 +2900,24 @@ function saveBoard(){
   if (d.isNew){
     S.boards.push({id:d.id, name:d.name, key:d.key, color:d.color, logo:d.logo||null, seq:0, order:undefined, columns:cols, tc:TC});
     P.active[wsId] = d.id; P.lastBoard = P.lastBoard || {}; P.lastBoard[wsId] = d.id; savePrefs();
-    composer = null; save(); closeModal(); render();
+    composer = null; logAct('act.boardNew', {name:d.name}, {boardId:d.id}); save(); closeModal(); render();
     toast(t('toast.boardCreated', {name:d.name}));
     return;
   }
   const b = boardById(d.id), oldName = b.name;
+  // what changed, in words, for the activity history
+  const chg = [], oldCols = new Map(b.columns.map(c=>[c.id, c]));
+  if (oldName !== d.name) chg.push(t('act.d.renamed', {from:oldName}));
+  if (b.key !== d.key) chg.push(t('act.d.key', {from:b.key, to:d.key}));
+  const added = cols.filter(c=>!oldCols.has(c.id)), gone = b.columns.filter(c=>!cols.some(x=>x.id === c.id));
+  const renamed = cols.filter(c=>oldCols.has(c.id) && oldCols.get(c.id).name !== c.name);
+  if (added.length) chg.push(t('act.d.colAdd', {names:added.map(c=>c.name).join(', ')}));
+  if (gone.length) chg.push(t('act.d.colDel', {names:gone.map(c=>c.name).join(', ')}));
+  renamed.forEach(c=>chg.push(t('act.d.colRen', {from:oldCols.get(c.id).name, to:c.name})));
+  const keep = id=>cols.some(x=>x.id === id) && oldCols.has(id);
+  if (b.columns.filter(c=>keep(c.id)).map(c=>c.id).join() !== cols.filter(c=>keep(c.id)).map(c=>c.id).join()) chg.push(t('act.d.order'));
+  if (b.color !== d.color) chg.push(t('act.d.color'));
+  if ((b.logo || null) !== (d.logo || null)) chg.push(t('act.d.logo'));
   const exists = new Set(cols.map(c=>c.id));
   const resolve = id=>{ let x = id, guard = 0; while (!exists.has(x) && guard++ < 50) x = d.removed[x]; return exists.has(x) ? x : cols[0].id; };
   const names = Object.fromEntries([...b.columns, ...cols].map(c=>[c.id,c.name]));
@@ -2909,6 +2928,7 @@ function saveBoard(){
   if (oldName !== d.name) S.issues.forEach(i=>{ if (i.boardId === b.id) i.labels = i.labels.map(l=>sameText(l, oldName) ? normLabel(d.name) : l); });
   Object.assign(b, {name:d.name, key:d.key, color:d.color, logo:d.logo||null, columns:cols});
   S.issues.forEach(i=>{ if (i.boardId !== b.id) return; const done = isDone(i); if (done && !i.doneAt) i.doneAt = Date.now(); if (!done) i.doneAt = null; });
+  if (chg.length) logAct('act.boardEdit', {name:d.name, d:chg.join(' · ')}, {boardId:b.id});
   save(); closeModal(); render();
   toast(moved ? t('toast.boardSavedMoved', {n:tn('issues', moved)}) : t('toast.boardSaved'));
 }
@@ -2921,8 +2941,9 @@ function deleteBoard(id){
       const bix = S.boards.indexOf(b), removed = S.issues.filter(i=>i.boardId===id), wasActive = activeKey() === id;
       S.boards.splice(bix,1); S.issues = S.issues.filter(i=>i.boardId!==id);
       if (wasActive) P.active[wsId] = S.boards[Math.max(0,bix-1)]?.id || ALL;
+      logAct('act.boardDel', {name:b.name, n:removed.length});
       savePrefs(); save(); closeModal(); render();
-      toast(t('toast.boardDeleted', {name:b.name}), {action:t('btn.undo'), fn:()=>{ S.boards.splice(bix,0,b); S.issues.push(...removed); removed.forEach(i=>{ i.rank = undefined; }); if (wasActive) P.active[wsId] = b.id; save(); render(); }});
+      toast(t('toast.boardDeleted', {name:b.name}), {action:t('btn.undo'), fn:()=>{ logAct('act.boardUndel', {name:b.name}, {boardId:b.id}); S.boards.splice(bix,0,b); S.issues.push(...removed); removed.forEach(i=>{ i.rank = undefined; }); if (wasActive) P.active[wsId] = b.id; save(); render(); }});
     }});
 }
 
@@ -2973,7 +2994,7 @@ function saveTypes(){
   const names = Object.fromEntries([...S.types, ...types].map(x=>[x.id,x.name]));
   S.issues.filter(i=>!exists.has(i.type)).forEach(i=>{ const to = resolve(i.type); touch(i, t('h.typeRemoved', {from:names[i.type], to:names[to]})); i.type = to; });
   S.types = types;
-  save(); closeModal(); render(); toast(t('toast.typesSaved'));
+  logAct('act.types'); save(); closeModal(); render(); toast(t('toast.typesSaved'));
 }
 
 /* ----- Workspace settings: name, logo, people, requests ----- */
@@ -3026,7 +3047,7 @@ function renderWsSettingsBody(){
     </section>`);
 }
 async function setMember(email, role){
-  try { await store.setMember(wsId, email, role); return true; }
+  try { await store.setMember(wsId, email, role); logAct(role ? 'act.share' : 'act.unshare', {email, role:role ? t('role.' + role) : ''}); flush(); return true; }
   catch(e){ console.error(e); toast(t('toast.saveFailed')); return false; }
 }
 let wsNameTimer = 0;
@@ -3445,6 +3466,10 @@ document.addEventListener('click', async e=>{
     case 'dash-showall': P.dashHide = []; savePrefs(); dashRefresh(); break;
     case 'dash-hideall': P.dashHide = DASH_W.map(w=>w.id); savePrefs(); dashRefresh(); break;
     case 'gs-open': gsFocus(); break;
+    case 'activity': openActivity(); break;
+    case 'act-tab': actView.k = b.dataset.k; actView.n = 120; actRefresh(); break;
+    case 'act-more': actView.n += 150; actRefresh(); break;
+    case 'act-open': openIssue(b.dataset.id); break;
     case 'gs-go': gsGo(b.dataset.id); break;
     case 'gs-more': { const sc = gres.scrollTop; gsAll.add(b.dataset.g); gsRender(); gres.scrollTop = sc; gq.focus(); break; }
     case 'cal-today': calAnchor = today(); calSel = today(); renderCal(); break;
@@ -3633,6 +3658,97 @@ document.addEventListener('keydown', e=>{
 // debounced: with hundreds of tasks a render on every keystroke made typing lag on phones
 $('#q').addEventListener('input', e=>{ query = e.target.value; clearTimeout(qTimer); qTimer = setTimeout(render, query ? 140 : 0); });
 
+/* ================= Activity history (top bar) =================
+   Who did what, across the whole workspace. Task changes come from each task's own history and its
+   comments; things that leave no task behind (deleting a task, board and settings changes, imports,
+   sharing) are written as small "act_…" documents next to the settings. */
+let actQ = [], actRemote = null, actLocal = [], actWs = null, actView = {k:'all', who:'', board:'', n:120}, actLoading = false;
+function logAct(k, p={}, extra={}){
+  if (!store || !wsId || !canEdit()) return;
+  const now = Date.now(), id = 'act_' + now.toString(36).padStart(9, '0') + '_' + uid().replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
+  const data = JSON.parse(JSON.stringify({at:now, by:{name:user?.name || '', email:user?.email || '', uid:user?.uid || ''}, k, p, ...extra}));
+  actQ.push({ws:wsId, id, data}); actLocal.push({id, ...data, ws:wsId});
+  save();
+  if (modalKind === 'activity') actRefresh();
+}
+async function actLoad(force){
+  if (actLoading || (!force && actRemote && actWs === wsId)) return;
+  actLoading = true; const w = wsId;
+  try { const list = store.listActivity ? await store.listActivity(w, 500) : []; if (w === wsId){ actRemote = list; actWs = w; } }
+  catch(e){ console.warn(e); if (w === wsId){ actRemote = []; actWs = w; } }
+  actLoading = false;
+  if (modalKind === 'activity') actRefresh();
+}
+const ACT_KIND = k=>k === 'act.del' ? 'del' : 'board';
+function actEntries(){
+  const out = [], tCreated = new Set([t('h.created'), 'Created the task', 'יצירת המשימה']);
+  for (const i of S.issues){
+    for (const h of i.history || []) out.push({at:h.at, who:h.by || '', kind:tCreated.has(h.text) ? 'new' : 'edit', text:h.text, issue:i, boardId:i.boardId});
+    for (const c of i.comments || []) out.push({at:c.at, who:c.by?.name || c.by?.email || '', email:c.by?.email, kind:'comment', text:t('act.comment', {text:String(c.text || '').replace(/\s+/g, ' ').slice(0, 90) + (String(c.text || '').length > 90 ? '…' : '')}), issue:i, boardId:i.boardId});
+  }
+  const seen = new Set();
+  for (const a of [...(actWs === wsId ? actRemote || [] : []), ...actLocal.filter(x=>x.ws === wsId)]){
+    if (!a || seen.has(a.id) || !a.k) continue; seen.add(a.id);
+    const iss = a.issueId ? S.issues.find(x=>x.id === a.issueId) : null;
+    out.push({at:a.at, who:a.by?.name || a.by?.email || '', email:a.by?.email, kind:ACT_KIND(a.k), text:t(a.k, a.p || {}), detail:a.p?.d || '', issue:iss, gone:!iss && a.p?.key ? {key:a.p.key, title:a.p.title} : null, boardId:a.boardId || ''});
+  }
+  return out.filter(e=>e.at).sort((a, b)=>b.at - a.at);
+}
+let actDir = null;
+function actPerson(name, email){
+  const dir = actDir || [...peopleDir().values()], p = (email && dir.find(x=>x.email === email)) || dir.find(x=>x.name && x.name === name);
+  return p || {name, email};
+}
+const ACT_TABS = ['all', 'new', 'edit', 'comment', 'del', 'board'];
+function actHTML(){
+  const all = actEntries(), V = actView; actDir = [...peopleDir().values()];
+  const people = [...new Set(all.map(e=>e.who).filter(Boolean))].sort((a, b)=>a.localeCompare(b));
+  if (V.who && !people.includes(V.who)) V.who = '';
+  const list = all.filter(e=>(V.k === 'all' || e.kind === V.k) && (!V.who || e.who === V.who) && (!V.board || e.boardId === V.board));
+  const shown = list.slice(0, V.n), tday = today(), yday = isoAdd(tday, -1);
+  const dayName = d=>d === tday ? t('act.today') : d === yday ? t('act.yesterday') : fmtr('actd', {weekday:'long', day:'numeric', month:'long', year:d.slice(0, 4) === tday.slice(0, 4) ? undefined : 'numeric'}).format(new Date(d+'T12:00'));
+  const hm = fmtr('acthm', {hour:'2-digit', minute:'2-digit'});
+  let last = '', rows = '';
+  for (const e of shown){
+    const d = iso(new Date(e.at));
+    if (d !== last){ rows += `<li class="act-day" role="presentation">${esc(dayName(d))}</li>`; last = d; }
+    const b = boardById(e.boardId), who = e.who || t('act.someone');
+    const task = e.issue ? `<button class="act-task" data-act="act-open" data-id="${e.issue.id}"><span class="act-key">${esc(key(e.issue))}</span><span data-bidi>${esc(e.issue.title || t('issue.untitled'))}</span>${e.issue.archived ? `<span class="loz st">${esc(t('issue.archived'))}</span>` : ''}</button>`
+      : e.gone ? `<span class="act-task gone"><span class="act-key">${esc(e.gone.key)}</span><span data-bidi>${esc(e.gone.title || '')}</span></span>` : '';
+    rows += `<li class="act-row k-${e.kind}">${avatar(actPerson(e.who, e.email), 'sm')}
+      <div class="act-body"><div class="act-line"><b data-bidi>${esc(who)}</b><span class="act-sep" aria-hidden="true">·</span><span class="act-txt" data-bidi>${esc(e.kind === 'new' ? t('act.created') : e.text)}</span></div>
+        ${e.detail ? `<div class="act-detail" data-bidi>${esc(e.detail)}</div>` : ''}
+        <div class="act-meta">${task}${b && !e.issue ? `<span class="act-b">${bAv(b, 'xs')}<span data-bidi>${esc(b.name)}</span></span>` : e.issue && b && isAll() ? `<span class="act-b">${bAv(b, 'xs')}</span>` : ''}<time datetime="${new Date(e.at).toISOString()}" title="${esc(new Date(e.at).toLocaleString(locale()))}">${esc(hm.format(e.at))}</time></div></div></li>`;
+  }
+  const tabs = `<div class="seg act-tabs" role="tablist">${ACT_TABS.map(k=>`<button role="tab" data-act="act-tab" data-k="${k}" aria-selected="${V.k === k}" aria-pressed="${V.k === k}">${esc(t('act.t.' + k))}</button>`).join('')}</div>`;
+  const sel = `<div class="act-sel"><select class="inp sm" data-k="act-who" aria-label="${esc(t('act.who'))}"><option value="">${esc(t('act.everyone'))}</option>${people.map(p=>`<option value="${esc(p)}"${p === V.who ? ' selected' : ''}>${esc(p)}</option>`).join('')}</select>
+    <select class="inp sm" data-k="act-board" aria-label="${esc(t('act.board'))}"><option value="">${esc(t('nav.allBoards'))}</option>${S.boards.map(b=>`<option value="${b.id}"${b.id === V.board ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div>`;
+  return `${head(t('act.title'), `<span class="act-count">${esc(tn('act.n', list.length))}</span>`)}
+    <div class="act-bar">${tabs}${sel}</div>
+    <div class="act-scroll"><ol class="act-list">${rows || `<li class="act-empty">${I.history}<span>${esc(actLoading && !actRemote ? t('act.loading') : t('act.none'))}</span></li>`}</ol>
+      ${list.length > V.n ? `<button class="btn subtle act-more" data-act="act-more">${esc(t('act.more', {n:Math.min(150, list.length - V.n)}))}</button>` : ''}
+      ${actLoading ? `<p class="act-note">${esc(t('act.loading'))}</p>` : ''}</div>`;
+}
+function openActivity(){
+  actView.n = 120;
+  const dlg = showModal(actHTML(), 'activity', 'act'); dlg.setAttribute('aria-label', t('act.title'));
+  actLoad(true);
+  requestAnimationFrame(()=>$('[data-act="act-tab"][aria-selected="true"]', layer)?.focus({preventScroll:true}));
+}
+function actRefresh(){
+  const dlg = modalKind === 'activity' && $('.dialog', layer); if (!dlg) return;
+  const sc = $('.act-scroll', dlg)?.scrollTop || 0, f = document.activeElement?.dataset?.k || document.activeElement?.dataset?.act, fk = document.activeElement?.dataset?.k2 || document.activeElement?.dataset?.k;
+  dlg.innerHTML = actHTML();
+  const box = $('.act-scroll', dlg); if (box) box.scrollTop = sc;
+  if (f) $(`[data-k="${f}"], [data-act="${f}"][aria-selected="true"]`, dlg)?.focus({preventScroll:true});
+}
+layer.addEventListener('change', e=>{
+  if (modalKind !== 'activity') return;
+  const k = e.target.dataset.k;
+  if (k === 'act-who'){ actView.who = e.target.value; actView.n = 120; actRefresh(); }
+  if (k === 'act-board'){ actView.board = e.target.value; actView.n = 120; actRefresh(); }
+});
+
 /* double-click on an empty spot closes the side panel, if it is open */
 const DBL_SKIP = 'button,a,input,textarea,select,label,option,[contenteditable],[data-act],[role="button"],.card,tr,.cal-chip,.cal-day,.ds-day,.viz-card,.kpi,.side,#pop,#layer,.gsearch,.toast,.col-head,.ed-row';
 document.addEventListener('dblclick', e=>{
@@ -3747,7 +3863,7 @@ function toast(msg, opt={}){
   if (opt.action) $('button',el).onclick = e=>{ e.stopPropagation(); if (moved) return; close(); opt.fn(); };
   // a "task created" message: clicking anywhere on it opens the task too
   if (opt.open){ el.classList.add('t-open'); el.title = opt.action; el.addEventListener('click', ()=>{ if (moved || gone) return; close(); opt.fn(); }); }
-  let timer = setTimeout(close, opt.ms || (opt.open ? 8000 : opt.action ? 6000 : 3200));
+  let timer = setTimeout(close, opt.ms || (opt.open ? 10000 : opt.action ? 6000 : 3200));
   // pause only while a real mouse is over it: on phones a tap fires mouseenter but never mouseleave,
   // which kept the message up for good
   el.addEventListener('pointerenter', e=>{ if (e.pointerType === 'mouse') clearTimeout(timer); });
@@ -4089,6 +4205,7 @@ function applyTracker(){
       i.rank = undefined; S.issues.push(i); made++;
     }
   });
+  if (made || changed) logAct('act.import', {a:made, u:changed});
   closeModal(); save(); render();
   toast(t('trk.done', {a:made, u:changed}), {ms:6000});
 }
@@ -4136,6 +4253,7 @@ function applyImport(mode){
     conv.types.forEach(x=>{ if (known.has(x.id)) return; const same = knownNames.get(norm(x.name)); if (same) remap.set(x.id, same); else S.types.push(x); });
     S.boards.push(...conv.boards.map(b=>({...b, tc:TC}))); S.issues.push(...conv.issues.map(i=>({...i, type:remap.get(i.type) || i.type, rank:undefined})));
   }
+  logAct(mode === 'replace' ? 'act.restoreAll' : 'act.restoreAdd', {n:conv.issues.length});
   save(); closeModal(); render(); toast(t('toast.imported', {n:tn('issues', conv.issues.length)}));
 }
 $('#importFile').addEventListener('change', async e=>{
