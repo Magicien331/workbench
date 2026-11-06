@@ -37,7 +37,7 @@ const COLS_PPC = ()=>[['todo','todo'],['doing','doing'],['approval','wait'],['fi
 const COLS_BASIC = ()=>[['todo','todo'],['doing','doing'],['done','done']].map(([k,cat])=>({id:uid(), name:t('tpl.col.'+k), cat}));
 const TYPES_PPC = ()=>[['brief','#8F7EE7','flag'],['analysis','#2898BD','eye'],['mediaplan','#D97008','ring'],['launch','#22A06B','bolt'],['creative','#E774BB','heart'],['optim','#1D7AFC','up'],['report','#626F86','doc'],['tracking','#E5493A','dot']].map(([id,color,glyph])=>({id, name:t('tpl.type.'+id), color, glyph}));
 const TYPES_BASIC = ()=>[['task','#4BADE8','check'],['story','#63BA3C','bookmark'],['bug','#E5493A','dot']].map(([id,color,glyph])=>({id, name:t('tpl.type.'+id), color, glyph}));
-const PPC_CLIENTS = [['קניון עופר','OFR','#2898BD','kanyon-ofer'],['אלדן','ELD','#22A06B','eldan'],['בית בלב','BTB','#F38A3F','beit-balev'],['ליימן שליסל','LSH','#8F7EE7','leiman-schlissel']];
+const PPC_CLIENTS = [['קניון עופר','OFR','#2898BD','kanyon-ofer'],['אלדן','ELD','#22A06B','eldan'],['משביר לצרכן','MSB','#44546F','mashbir'],['ליימן שליסל','LSH','#8F7EE7','leiman-schlissel']];
 
 /* ================= Helpers ================= */
 const $ = (s,r=document)=>r.querySelector(s), $$ = (s,r=document)=>[...r.querySelectorAll(s)];
@@ -476,7 +476,7 @@ function onMeta(m){
   synced.meta = incJson;
   loaded.meta = true; dataArrived(); if (screen === 'app') scheduleRender();
 }
-function dataArrived(){ if (loaded.boards && loaded.issues && loaded.meta){ addTrackerStatuses(); showApp(); scheduleRender(); setTimeout(runRecurring, 0); } }
+function dataArrived(){ if (loaded.boards && loaded.issues && loaded.meta){ addTrackerStatuses(); renameClients(); showApp(); scheduleRender(); setTimeout(runRecurring, 0); } }
 // once per board: boards made before these existed get the two statuses of the task-tracker sheet
 // ("דורש תיקונים", "לא בוצע"). The board is marked (tc), so if it later removes them they stay removed.
 // Kept on the boards, not in the settings doc, so it can never overwrite settings that haven't arrived yet.
@@ -496,6 +496,37 @@ function ensureTrackerCols(b){
   return added;
 }
 const TC = 2; // version of the one-time column update (2: also adds a waiting-for-approval column)
+/* ---------- renamed clients ----------
+   When a client changes, every existing board of the old client is updated once, for everyone who opens the
+   site and can edit: new name, code (if it's still the template one and free), colour and logo. The board
+   keeps its tasks; the old names keep matching when a tracker sheet is imported. */
+const CLIENT_RENAMES = [{from:'בית בלב', to:'משביר לצרכן', oldKey:'BTB', key:'MSB', oldColor:'#F38A3F', color:'#44546F', logo:'mashbir', also:['המשביר לצרכן','משביר','המשביר']}];
+let renaming = false;
+async function renameClients(){
+  if (renaming || !canEdit()) return;
+  const todo = CLIENT_RENAMES.map(r=>({r, bs:S.boards.filter(b=>loose(b.name) === loose(r.from))})).filter(x=>x.bs.length);
+  if (!todo.length) return;
+  renaming = true;
+  try {
+    for (const {r, bs} of todo){
+      // all or nothing: without the new logo (offline) the board waits for the next visit
+      let logo = null;
+      try { const res = await fetch(`assets/clients/${r.logo}.png`); if (res.ok) logo = await readLogo(await res.blob()); } catch {}
+      if (!logo) continue;
+      bs.forEach(b=>{
+        if (loose(b.name) !== loose(r.from)) return;
+        b.name = r.to; b.logo = logo;
+        if (b.key === r.oldKey && !S.boards.some(x=>x !== b && x.key === r.key)) b.key = r.key;
+        if (String(b.color).toUpperCase() === r.oldColor) b.color = r.color;
+      });
+    }
+    save(); scheduleRender();
+  } finally { renaming = false; }
+}
+// a client name as written in a sheet → the name used on the site now
+const isOldClient = w=>CLIENT_RENAMES.some(r=>loose(r.from) === loose(w));
+function clientNow(w){ const l = loose(w); const r = CLIENT_RENAMES.find(r=>loose(r.from) === l || r.also.some(a=>loose(a) === l)); return r ? r.to : w; }
+
 function addTrackerStatuses(){
   if (!canEdit()) return;
   const todo = S.boards.filter(b=>(b.tc || 0) < TC); if (!todo.length) return;
@@ -3257,8 +3288,9 @@ function findTracker(sheets){
   return null;
 }
 function trkBoard(word){
-  const w = String(word ?? '').trim(); if (!w) return null;
-  return S.boards.find(b=>sameText(b.name, w) || (b.alias && sameText(b.alias, w))) || S.boards.find(b=>loose(b.name) === loose(w) || (b.alias && loose(b.alias) === loose(w))) || null;
+  const w0 = String(word ?? '').trim(); if (!w0) return null;
+  const byName = w=>S.boards.find(b=>sameText(b.name, w) || (b.alias && sameText(b.alias, w))) || S.boards.find(b=>loose(b.name) === loose(w) || (b.alias && loose(b.alias) === loose(w))) || null;
+  return byName(w0) || byName(clientNow(w0));
 }
 function trkColumn(cols, word){
   const w = String(word ?? '').trim(); if (!w) return cols[0];
@@ -3276,7 +3308,7 @@ function planTracker({sheet, hm}){
     const title = str(r, 'title'); if (!title) return;
     const cw = str(r, 'client');
     let b = trkBoard(cw), bKey = b ? b.id : null;
-    if (!b && cw){ bKey = 'new:' + loose(cw); if (!newBoards.has(bKey)) newBoards.set(bKey, cw); }
+    if (!b && cw){ bKey = 'new:' + loose(clientNow(cw)); if (!newBoards.has(bKey)) newBoards.set(bKey, clientNow(cw)); }
     if (!b && !cw){ b = fallbackBoard; bKey = b?.id; }
     if (!bKey) return;
     const cols = b ? b.columns : tplCols, sw = str(r, 'status');
@@ -3290,7 +3322,7 @@ function planTracker({sheet, hm}){
     for (const m of docText.matchAll(/https?:\/\/[^\s<>"]+/g)) addL(m[0], '');
     const docNote = docText && !docUrl && !/https?:\/\//i.test(docText) ? docText : '';
     const row = {k, title, bKey, boardName:b ? b.name : cw, colId:b ? col?.id || null : null, statusWord:sw, prio, start:cellDate(get(r, 'start')), due:cellDate(get(r, 'due')),
-      links, notes:[String(get(r, 'notes') ?? '').trim(), docNote ? `${TRACKER.head[6]}: ${docNote}` : ''].filter(Boolean).join('\n'), alias:b && cw && !sameText(b.name, cw) && !(b.alias && sameText(b.alias, cw)) ? cw : null};
+      links, notes:[String(get(r, 'notes') ?? '').trim(), docNote ? `${TRACKER.head[6]}: ${docNote}` : ''].filter(Boolean).join('\n'), alias:b && cw && !isOldClient(cw) && !sameText(b.name, cw) && !(b.alias && sameText(b.alias, cw)) ? cw : null};
     // same client + same name = the same task
     const ex = b ? S.issues.find(i=>!used.has(i.id) && i.boardId === b.id && sameText(i.title, title)) : null;
     if (ex){ used.add(ex.id); row.id = ex.id; row.changed = trkChanged(ex, row);
