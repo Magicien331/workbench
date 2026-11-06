@@ -448,7 +448,13 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:24px
 @keyframes toastIn{from{opacity:0;transform:translateY(12px) scale(.98)}}
 @keyframes toastOut{to{opacity:0;transform:translateX(-12px)}}
 .toast .t-check{color:var(--ok);display:flex}
-.toast .t-msg{flex:1;font-weight:500}
+.toast .t-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.toast .t-msg{font-weight:500}
+.toast .t-sub{font-size:12px;color:var(--text-sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toast.t-open{cursor:pointer;transition:background .12s, box-shadow .12s}
+.toast.t-open:hover{background:color-mix(in srgb, var(--overlay) 88%, var(--brand))}
+.toast .btn .i{width:14px;height:14px}
+.toast .btn{flex:none;gap:5px}
 .toast .btn{height:28px}
 
 

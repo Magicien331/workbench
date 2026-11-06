@@ -1422,7 +1422,7 @@ sheetview.addEventListener('submit', e=>{
   const b = isAll() ? (boardById(P.lastBoard?.[wsId]) || S.boards[0]) : curBoard(); if (!b) return;
   inp.value = '';
   const i = createIssue({title, boardId:b.id, status:b.columns[0].id, type:S.types[0]?.id, labels:[normLabel(b.name)]});
-  toast(isAll() ? t('toast.createdIn', {key:key(i), board:b.name}) : t('toast.created', {key:key(i)}), {action:t('btn.view'), fn:()=>openIssue(i.id)});
+  toast(isAll() ? t('toast.createdIn', {key:key(i), board:b.name}) : t('toast.created', {key:key(i)}), {action:t('btn.openTask'), open:true, sub:i.title, fn:()=>openIssue(i.id)});
   requestAnimationFrame(()=>{ $('[data-k="sheet-add"]', sheetview)?.focus({preventScroll:true}); const tr = $(`tr[data-id="${i.id}"]`, sheetview); tr?.scrollIntoView({block:'nearest'}); tr?.classList.add('s-new'); });
 });
 
@@ -2471,7 +2471,7 @@ document.addEventListener('click', e=>{ if (Date.now() - lastLong < 700 && !pop.
 function duplicateIssue(i){
   const c = createIssue({title:t('ctx.dupTitle', {title:i.title || t('issue.untitled')}).slice(0, 500), boardId:i.boardId, status:i.status, type:i.type, priority:i.priority, desc:i.desc,
     labels:[...i.labels], subtasks:i.subtasks.map(x=>({id:uid(), text:x.text, done:false})), links:i.links.map(l=>({...l, id:uid()})), color:i.color, start:i.start, due:i.due, points:i.points});
-  toast(t('ctx.duped', {key:key(c)}), {action:t('btn.view'), fn:()=>openIssue(c.id)});
+  toast(t('ctx.duped', {key:key(c)}), {action:t('btn.openTask'), open:true, sub:c.title, fn:()=>openIssue(c.id)});
 }
 
 function wsMenu(){
@@ -2732,7 +2732,7 @@ function submitCreate(form){
     const onOther = !isAll() && i.boardId !== curBoard()?.id;
     const view = ()=>{ if (!isAll() && i.boardId !== curBoard()?.id) switchBoard(i.boardId); openIssue(i.id); };
     if (!another) openFocusId = i.id;
-    toast(onOther ? t('toast.createdIn', {key:key(i), board:boardOf(i).name}) : t('toast.created', {key:key(i)}), {action:t('btn.view'), fn:view});
+    toast(onOther ? t('toast.createdIn', {key:key(i), board:boardOf(i).name}) : t('toast.created', {key:key(i)}), {action:t('btn.openTask'), open:true, sub:i.title, fn:view});
   };
   if (another){ go(); form.title.value = ''; form.desc.value = ''; autosize(form.desc); form.title.focus(); return; }
   // Close the dialog at once and let that frame paint before the board re-renders. Before, the dialog
@@ -3727,14 +3727,17 @@ function toast(msg, opt={}){
   const box = $('#toasts');
   while (box.children.length >= 3) box.firstElementChild.remove();
   const el = document.createElement('div'); el.className = 'toast'; el.setAttribute('role','status');
-  el.innerHTML = `<span class="t-check">${I.check}</span><span class="t-msg" data-bidi></span>${opt.action?`<button class="btn sm">${esc(opt.action)}</button>`:''}`;
+  el.innerHTML = `<span class="t-check">${I.check}</span><span class="t-body"><span class="t-msg"></span>${opt.sub ? '<span class="t-sub" data-bidi></span>' : ''}</span>${opt.action?`<button class="btn sm${opt.open ? ' primary' : ''}">${opt.open ? I.open || '' : ''}${esc(opt.action)}</button>`:''}`;
   $('.t-msg',el).textContent = msg;
+  if (opt.sub) $('.t-sub',el).textContent = opt.sub;
   box.appendChild(el);
   let gone = false;
   const close = ()=>{ if (gone) return; gone = true; el.classList.add('out'); setTimeout(()=>el.remove(), reduce?0:200); };
   let moved = false; // a swipe that starts on the button must not press it
-  if (opt.action) $('button',el).onclick = ()=>{ if (moved) return; close(); opt.fn(); };
-  let timer = setTimeout(close, opt.ms || (opt.action ? 6000 : 3200));
+  if (opt.action) $('button',el).onclick = e=>{ e.stopPropagation(); if (moved) return; close(); opt.fn(); };
+  // a "task created" message: clicking anywhere on it opens the task too
+  if (opt.open){ el.classList.add('t-open'); el.title = opt.action; el.addEventListener('click', ()=>{ if (moved || gone) return; close(); opt.fn(); }); }
+  let timer = setTimeout(close, opt.ms || (opt.open ? 8000 : opt.action ? 6000 : 3200));
   // pause only while a real mouse is over it: on phones a tap fires mouseenter but never mouseleave,
   // which kept the message up for good
   el.addEventListener('pointerenter', e=>{ if (e.pointerType === 'mouse') clearTimeout(timer); });
