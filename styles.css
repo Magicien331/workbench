@@ -866,7 +866,7 @@ textarea[data-bidi],input[data-bidi],p[data-bidi],.c-title,.t-sum{text-align:sta
 .nav-div{width:1px;height:22px;background:var(--border);flex:none;margin-inline:2px}
 [data-tone="dark"] .brand-ink{filter:invert(1) brightness(.92)}
 @media (max-width:760px){ .brand-logo{height:20px} .nav-div{display:none} }
-@media (max-width:380px){ .brand-logo{height:17px} }
+@media (max-width:380px){ .brand-logo{height:17px} .ws-btn{min-width:0;flex:0 1 auto} .nav{gap:2px} .nav-act{margin-inline-start:0} }
 
 .note-box{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:8px;background:var(--hover);color:var(--text-subtle);font-size:14px;line-height:20px;margin:4px 0 16px}
 .note-box .i{flex:none;width:18px;height:18px;margin-top:1px}
