@@ -5,5 +5,5 @@ try {
   var l = localStorage.getItem('workbench.lang') || 'he';
   document.documentElement.lang = l; document.documentElement.dir = l === 'he' ? 'rtl' : 'ltr';
   var p = JSON.parse(localStorage.getItem('workbench.prefs') || '{}');
-  document.documentElement.dataset.theme = p.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  var th = p.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); document.documentElement.dataset.theme = th; document.documentElement.dataset.tone = ['dark','purpledark','blackred','blackyellow'].indexOf(th) >= 0 ? 'dark' : 'light';
 } catch (e) {}

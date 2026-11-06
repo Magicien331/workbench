@@ -130,7 +130,7 @@ const isPhoto = s=>typeof s === 'string' && s.length <= 2048 && /^lh[0-9]{1,2}\.
 function avatar(p, cls=''){
   p = p || {};
   const n = p.name || p.email || '?', parts = String(n).trim().split(/\s+/);
-  const ini = esc(((parts[0]||'?')[0] + (parts[1]?.[0]||'')).toUpperCase()), tip = esc(p.name||p.email||''), bg = `hsl(${hue(p.email||n)} 45% 45%)`;
+  const ini = esc(((parts[0]||'?')[0] + (parts[1]?.[0]||'')).toUpperCase()), tip = esc(p.name||p.email||''), bg = `hsl(${hue(p.email||n)} 45% 40%)`;
   if (isPhoto(p.photo) || (user && p.photo && p.photo === user.photo && isOwnPhoto(p.photo))) return `<img class="avatar ${cls}" src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer"${cls === 'xs' ? ' loading="lazy"' : ''} title="${tip}" data-ini="${ini}" data-bg="${bg}">`;
   return `<span class="avatar ${cls}" style="background:${bg}" title="${tip}">${ini}</span>`;
 }
@@ -151,6 +151,10 @@ const I = {
   more:ic('<circle cx="5.5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.7" fill="currentColor" stroke="none"/>'),
   check:ic('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
   cal:ic('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'),
+  users:ic('<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 5.2a3 3 0 0 1 0 5.6M17.5 14.2a5.2 5.2 0 0 1 3 4.8"/>'),
+  rel:ic('<rect x="3" y="4" width="8" height="6" rx="1.5"/><rect x="13" y="14" width="8" height="6" rx="1.5"/><path d="M7 10v3a2 2 0 0 0 2 2h4"/>'),
+  block:ic('<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>'),
+  back:ic('<path d="M15 6l-6 6 6 6"/>'),
   repeat:ic('<path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/>'),
   chart:ic('<path d="M4 20V10M10 20V4M16 20v-7M21 20H3"/>'),
   sliders:ic('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
@@ -373,6 +377,11 @@ function normIssue(id, d){
   if (d.creator && typeof d.creator === 'object') o.creator = normBy(d.creator); // older tasks have none
   const rc = normRecur(d.recur); if (rc) o.recur = rc;
   if (typeof d.recurOf === 'string' && d.recurOf) o.recurOf = d.recurOf.slice(0, 120);
+  // people who share the task with its creator, and links to other tasks (only stored when there are any)
+  const wth = (Array.isArray(d.with) ? d.with : []).map(normBy).filter(p=>p && (p.email || p.uid || p.name)).slice(0, 12);
+  if (wth.length) o.with = wth;
+  const rel = []; (Array.isArray(d.rel) ? d.rel : []).forEach(r=>{ const rid = r && typeof r.id === 'string' ? sid(r.id) : ''; if (rid && rid !== id && !rel.some(x=>x.id === rid)) rel.push({id:rid, k:REL_KINDS.includes(r.k) ? r.k : 'rel'}); });
+  if (rel.length) o.rel = rel.slice(0, 100);
   return o;
 }
 const serBoard = b=>{ const {id, ...rest} = b; return rest; };
@@ -383,7 +392,7 @@ const serMeta = ()=>({types:S.types.map(({id,name,color,glyph})=>({id,name,color
 // base = the last version of each doc we know the server has. Used for three-way merges,
 // so two people editing different parts of the same issue don't overwrite each other.
 const base = {boards:new Map(), issues:new Map()};
-const ID_ARRAYS = new Set(['comments','links','subtasks','history']);
+const ID_ARRAYS = new Set(['comments','links','subtasks','history','rel']); // merged item by item (a link to another task is identified by that task's id)
 function replaceInPlace(target, src){ for (const k of Object.keys(target)) if (!(k in src)) delete target[k]; Object.assign(target, src); }
 function assignMissing(arr, field){
   for (let k = 0; k < arr.length; k++){
@@ -601,7 +610,7 @@ function resolveStatus(b, status){
   return b.columns.find(c=>c.name.trim().toLowerCase()===k) || (v && b.columns.find(c=>c.cat===v.cat)) || null;
 }
 
-let qTimer = 0, query = '', qf = new Set(), typeFilter = null, platFilter = null, openId = null, tab = 'comments', cmtDraft = '', editingCid = null, lastPct = null;
+let qTimer = 0, query = '', qf = new Set(), peopleF = new Set(), typeFilter = null, platFilter = null, openId = null, tab = 'comments', cmtDraft = '', editingCid = null, lastPct = null;
 let lastCreateType = null;
 let composer = null, composerText = '', composerType = null, composerBoard = null, composerFocus = false;
 let sortBy = {k:'status', dir:1};
@@ -805,10 +814,11 @@ function matches(i){
   if (qf.has('week') && !(i.due && i.due >= tday && i.due <= addDays(7) && !done)) return false;
   if (qf.has('high') && PRANK[i.priority] > 1) return false;
   if (typeFilter && i.type !== typeFilter) return false;
+  if (peopleF.size){ const ps = peopleOf(i); if (!(ps.length ? ps.some(p=>peopleF.has(pKey(p))) : peopleF.has('-'))) return false; }
   if (platFilter === 'none' ? !!i.color : (platFilter && i.color !== platFilter)) return false;
   return true;
 }
-const filtering = ()=>!!query.trim() || qf.size > 0 || !!typeFilter || !!platFilter;
+const filtering = ()=>!!query.trim() || qf.size > 0 || peopleF.size > 0 || !!typeFilter || !!platFilter;
 function dueClass(i){
   if (!i.due || isDone(i)) return '';
   if (i.due < today()) return 'over';
@@ -837,10 +847,56 @@ function creatorOf(i){
   return h && h.by && CREATED_TEXTS.has(h.text) ? {name:h.by} : null;
 }
 const isShared = ()=>!!ws && (Object.keys(ws.roles||{}).length > 0 || (ws.memberEmails||[]).length > 1);
+/* ---------- people: who opened a task, and who it is shared with ----------
+   A person is known by email (or uid / name for very old tasks). A shared task lists its creator first,
+   then the people added to it; all of them count as the task's people for the filter and on the card. */
+const pKey = p=>p ? (String(p.email||'').trim().toLowerCase() || (p.uid ? 'u:' + p.uid : '') || (p.name ? 'n:' + String(p.name).trim() : '')) : '';
+const pName = p=>p ? (p.name || String(p.email||'').split('@')[0] || '?') : '?';
+function peopleOf(i){
+  const out = [], seen = new Set();
+  [creatorOf(i), ...(i.with || [])].forEach(p=>{ const k = pKey(p); if (k && !seen.has(k)){ seen.add(k); out.push(p); } });
+  return out;
+}
+// everyone this workspace knows: you, the owner, the people it is shared with, and anyone on a task
+function peopleDir(){
+  const m = new Map();
+  const add = (p, role)=>{ const k = pKey(p); if (!k) return; const o = m.get(k);
+    if (!o){ m.set(k, {key:k, uid:p.uid || '', name:p.name || '', email:p.email || '', photo:p.photo || '', role:role || ''}); return; }
+    for (const f of ['uid','name','email','photo']) if (!o[f] && p[f]) o[f] = p[f];
+    if (role && !o.role) o.role = role; };
+  if (user) add({uid:user.uid, name:user.name, email:user.email, photo:user.photo}, role() || 'owner');
+  if (ws){ if (ws.ownerEmail || ws.ownerUid) add({uid:ws.ownerUid, email:ws.ownerEmail, name:ws.ownerName}, 'owner');
+    Object.entries(ws.roles || {}).forEach(([e, r])=>add({email:e}, r)); }
+  S.issues.forEach(i=>peopleOf(i).forEach(p=>add(p)));
+  return m;
+}
+const meKey = ()=>user ? pKey({uid:user.uid, email:user.email, name:user.name}) : '';
 function creatorAv(i){
-  const c = creatorOf(i); if (!c) return '';
-  const nm = c.name || c.email;
-  return `<span class="c-by" title="${esc(t('card.createdBy', {name:nm}))}" aria-label="${esc(t('card.createdBy', {name:nm}))}">${avatar(c,'xs')}</span>`;
+  const ps = peopleOf(i); if (!ps.length) return '';
+  const tip = ps.length > 1 ? t('card.sharedBy', {names:ps.map(pName).join(', ')}) : t('card.createdBy', {name:pName(ps[0])});
+  return `<span class="c-by${ps.length > 1 ? ' multi' : ''}" title="${esc(tip)}" aria-label="${esc(tip)}">${ps.slice(0, 3).map(p=>avatar(p, 'xs')).join('')}${ps.length > 3 ? `<span class="avatar xs more">+${ps.length - 3}</span>` : ''}</span>`;
+}
+/* ---------- linked tasks ----------
+   A link is stored once, on the task where it was made: {id, k}. k is 'rel' (related), 'blocks' (this task
+   blocks the other) or 'needs' (this task waits for the other). The other task shows it reversed. */
+const REL_KINDS = ['rel','blocks','needs'], REL_FLIP = {rel:'rel', blocks:'needs', needs:'blocks'};
+const CAT_ORDER = {doing:0, wait:1, todo:2, done:3};
+function relsOf(i){
+  const m = new Map();
+  (i.rel || []).forEach(r=>{ const o = get(r.id); if (o && o.id !== i.id) m.set(o.id, {i:o, k:r.k, own:true}); });
+  S.issues.forEach(o=>{ if (o.id === i.id || m.has(o.id) || !o.rel) return; const r = o.rel.find(r=>r.id === i.id); if (r) m.set(o.id, {i:o, k:REL_FLIP[r.k], own:false}); });
+  // open work first (in progress, waiting, to do), then finished, then archived; inside, the nearest due date first
+  return [...m.values()].sort((a, b)=>(a.i.archived - b.i.archived) || ((CAT_ORDER[colOf(a.i).cat] ?? 2) - (CAT_ORDER[colOf(b.i).cat] ?? 2))
+    || (a.i.due || '9999').localeCompare(b.i.due || '9999') || key(a.i).localeCompare(key(b.i), undefined, {numeric:true}));
+}
+// per render: how many tasks each task is linked to, and which ones wait for unfinished work
+let relIx = new Map();
+function buildRelIx(){
+  const m = new Map(), bump = (id, open, needs)=>{ const o = m.get(id) || {n:0, blockedBy:[]}; o.n++; if (needs && open) o.blockedBy.push(open); m.set(id, o); };
+  S.issues.forEach(i=>(i.rel || []).forEach(r=>{ const o = get(r.id); if (!o) return;
+    bump(i.id, r.k === 'needs' && !isDone(o) && !o.archived ? o : null, r.k === 'needs');
+    bump(o.id, r.k === 'blocks' && !isDone(i) && !i.archived ? i : null, r.k === 'blocks'); }));
+  relIx = m;
 }
 function cardHTML(i){
   const n = i.subtasks.length, d = i.subtasks.filter(s=>s.done).length, dc = dueClass(i), done = isDone(i), age = ageInfo(i), labels = visibleLabels(i);
@@ -857,7 +913,9 @@ function cardHTML(i){
       ${n ? `<span class="meta-n${d===n?' all':''}" title="${esc(t('card.subtasks', {d, n}))}">${I.sub}<bdi>${d}/${n}</bdi></span>` : ''}
       ${i.comments.length ? `<span class="meta-n" title="${esc(tn('card.comments', i.comments.length))}">${I.comment}${i.comments.length}</span>` : ''}
       ${i.links.length ? `<span class="meta-n" title="${esc(tn('card.links', i.links.length))}">${I.link}${i.links.length}</span>` : ''}
-      <span class="c-right">${i.points!=null ? `<span class="pts" title="${esc(t('f.points'))}">${esc(i.points)}</span>` : ''}${prioIcon(i.priority)}${isShared() ? creatorAv(i) : ''}</span>
+      ${(()=>{ const r = relIx.get(i.id); if (!r) return ''; const bl = !done && r.blockedBy.length;
+        return `<span class="meta-n${bl ? ' blk' : ''}" title="${esc(bl ? t('rel.blockedTip', {keys:r.blockedBy.map(key).join(', ')}) : tn('rel.cardTip', r.n))}">${bl ? I.block : I.rel}${r.n}</span>`; })()}
+      <span class="c-right">${i.points!=null ? `<span class="pts" title="${esc(t('f.points'))}">${esc(i.points)}</span>` : ''}${prioIcon(i.priority)}${isShared() || i.with ? creatorAv(i) : ''}</span>
     </div>
   </article>`;
 }
@@ -1014,7 +1072,7 @@ function sheetVal(i, k){
     case 'start': return i.start || '￿'; case 'due': return i.due || '￿';
     case 'company': return lower(i.labels.join(',')) || '￿'; case 'desc': return lower(i.desc) || '￿';
     case 'subs': return i.subtasks.length ? i.subtasks.filter(x=>x.done).length / i.subtasks.length : 2;
-    case 'by': { const c = creatorOf(i); return c ? lower(c.name || c.email) : '￿'; }
+    case 'by': { const c = peopleOf(i)[0]; return c ? lower(pName(c)) : '￿'; }
   }
   return 0;
 }
@@ -1032,12 +1090,12 @@ function sheetCell(i, k, edit){
     case 'start': case 'due': {
       const f = k, v = i[f], cls = f === 'due' ? dueClass(i) : '';
       if (ro) return `<td class="s-date ${cls}">${v ? esc(fmtDay(v)) : '<span class="t-muted">—</span>'}</td>`;
-      return `<td class="s-date ${cls}"><input type="date" class="s-in" data-sf="${f}" data-id="${id}" value="${esc(v)}" aria-label="${esc(t('x.col.'+f))}"></td>`; }
+      return `<td class="s-date ${cls}"><input type="date" class="s-in${v ? '' : ' empty'}" data-sf="${f}" data-id="${id}" value="${esc(v)}" aria-label="${esc(t('x.col.'+f))}"></td>`; }
     case 'company': return `<td class="s-company">${ro ? `<span class="s-ro" data-bidi>${esc(i.labels.join(', '))}</span>` : `<input class="s-in" data-sf="labels" data-id="${id}" value="${esc(i.labels.join(', '))}" data-bidi autocomplete="off" placeholder="—" aria-label="${esc(t('x.col.company'))}">`}</td>`;
     case 'desc': return `<td class="s-desc">${ro ? `<span class="s-ro" data-bidi>${esc(cardDesc(i.desc))}</span>` : `<textarea class="s-in" data-sf="desc" data-id="${id}" rows="1" data-bidi placeholder="—" aria-label="${esc(t('x.col.desc'))}">${esc(i.desc)}</textarea>`}</td>`;
     case 'subs': { const n = i.subtasks.length, d = i.subtasks.filter(x=>x.done).length;
       return `<td class="s-subs">${n ? `<button class="s-prog${d===n?' all':''}" data-act="open-issue" data-id="${id}" title="${esc(t('card.subtasks', {d, n}))}"><span class="bar"><b style="width:${Math.round(d/n*100)}%"></b></span><bdi>${d}/${n}</bdi></button>` : '<span class="t-muted">—</span>'}</td>`; }
-    case 'by': { const c = creatorOf(i); return `<td class="s-by">${c ? `${avatar(c,'xs')}<span data-bidi>${esc(c.name || c.email)}</span>` : '<span class="t-muted">—</span>'}</td>`; }
+    case 'by': { const ps = peopleOf(i); return `<td class="s-by">${ps.length ? `<span class="s-avs">${ps.slice(0, 3).map(p=>avatar(p,'xs')).join('')}</span><span data-bidi>${esc(ps.map(pName).join(', '))}</span>` : '<span class="t-muted">—</span>'}</td>`; }
   }
   return '<td></td>';
 }
@@ -1064,7 +1122,7 @@ function sfFacets(i, k){
     case 'type': return [i.type];
     case 'plat': return [i.color || ''];
     case 'company': return i.labels.length ? i.labels.map(normLabel) : [''];
-    case 'by': { const c = creatorOf(i); return [c ? (c.name || c.email) : '']; }
+    case 'by': { const ps = peopleOf(i); return ps.length ? ps.map(pName) : ['']; }
     case 'start': return sfDateFacets(i.start, false, isDone(i));
     case 'due': return sfDateFacets(i.due, true, isDone(i));
     case 'subs': { const n = i.subtasks.length, d = i.subtasks.filter(x=>x.done).length; return [!n ? 'none' : d === n ? 'done' : 'open']; }
@@ -1146,7 +1204,7 @@ function renderSheet(){
   else vis.sort((a,c)=>((bIx.get(a[0].boardId)??0)-(bIx.get(c[0].boardId)??0)) || (colIx(a[0])-colIx(c[0])) || (a[0].rank-c[0].rank) || a[1]-c[1]);
   vis = vis.map(x=>x[0]);
   const scope = wsId + (all ? ALL : b.id);
-  const layoutKey = [scope, cols.join(','), sheetSort.k, sheetSort.dir, edit, getLang(), query, [...qf].join(), typeFilter, platFilter, sheetFKey()].join('|');
+  const layoutKey = [scope, cols.join(','), sheetSort.k, sheetSort.dir, edit, getLang(), query, [...qf].join(), [...peopleF].join(), typeFilter, platFilter, sheetFKey()].join('|');
   if (!sheetCache || sheetCache.key !== layoutKey) sheetLimit = SHEET_PAGE;
   if (fx.new){ const ix = vis.findIndex(i=>i.id===fx.new); if (ix >= sheetLimit) sheetLimit = ix + 20; } // a task just created is always shown
   const shown = vis.slice(0, sheetLimit), more = vis.length - shown.length;
@@ -1246,7 +1304,7 @@ function sheetCommit(el){
 }
 sheetview.addEventListener('focusin', e=>{ const el = e.target; if (el.matches('.s-in')){ sheetFocusVal = el.value; if (el.tagName === 'TEXTAREA') autosize(el); } });
 sheetview.addEventListener('change', e=>{ if (e.target.matches('.s-in')) sheetCommit(e.target); });
-sheetview.addEventListener('input', e=>{ if (e.target.matches('textarea.s-in')) autosize(e.target); });
+sheetview.addEventListener('input', e=>{ if (e.target.matches('textarea.s-in')) autosize(e.target); if (e.target.matches('input[type="date"].s-in')) e.target.classList.toggle('empty', !e.target.value); });
 sheetview.addEventListener('focusout', e=>{
   const el = e.target;
   if (el.matches('textarea.s-in')) el.style.height = '';
@@ -1293,7 +1351,8 @@ function calRange(){
 function calTitle(r){
   if (r.mode === 'month') return fmtr('my', {month:'long', year:'numeric'}).format(new Date(r.year, r.month, 1, 12));
   const a = new Date(r.start+'T12:00'), z = new Date(addD(r.start, 6)+'T12:00');
-  try { return fmtr('range', {day:'numeric', month:'short', year:'numeric'}).formatRange(a, z); } catch(e){ return fmtDay(r.start) + ' – ' + fmtDay(addD(r.start, 6)); }
+  // a day range like "1–7" stays left-to-right inside Hebrew text (otherwise it shows as "7–1")
+  try { return fmtr('range', {day:'numeric', month:'short', year:'numeric'}).formatRange(a, z).replace(/(\d+)\s*([–-])\s*(\d+)/, '\u2066$1$2$3\u2069'); } catch(e){ return fmtDay(r.start) + ' – ' + fmtDay(addD(r.start, 6)); }
 }
 function calChip(i, cls=''){
   const done = isDone(i), over = dueClass(i) === 'over', c = colOf(i);
@@ -1453,15 +1512,21 @@ function weekStart(isoDay){ const d = new Date(isoDay+'T12:00'); d.setDate(d.get
 const dayOf = ms=>iso(new Date(ms));
 // when a task stopped being open: finished, or archived without finishing (null = still open)
 const closedAt = i=>i.doneAt || (isDone(i) ? i.updated : null) || (i.archived ? i.archivedAt : null);
+// closed without being done ("לא בוצע", cancelled): out of the board, but not counted as completed work
+const DROP_NAMES = ['לא בוצע','בוטל','בוטלה','not done','cancelled','canceled',"won't do"];
+const isDropped = i=>{ const c = colOf(i); return !!c && c.cat === 'done' && DROP_NAMES.some(n=>loose(n) === loose(c.name)); };
+const completed = i=>!!i.doneAt && !isDropped(i);
 function dashStats(list, weeks){
   const tday = today(), from = isoAdd(weekStart(tday), -7*(weeks-1)), live = list.filter(i=>!i.archived);
   const open = live.filter(i=>!isDone(i));
-  const doneIn = list.filter(i=>i.doneAt && dayOf(i.doneAt) >= from);
+  const doneIn = list.filter(i=>completed(i) && dayOf(i.doneAt) >= from);
+  const prevFrom = isoAdd(from, -7*weeks), prevDone = list.filter(i=>completed(i) && dayOf(i.doneAt) >= prevFrom && dayOf(i.doneAt) < from).length;
+  const dropped = list.filter(i=>i.doneAt && isDropped(i) && dayOf(i.doneAt) >= from).length;
   const withDue = doneIn.filter(i=>i.due);
   const onTime = withDue.filter(i=>dayOf(i.doneAt) <= i.due).length;
   const spans = doneIn.map(i=>daysBetween(i.start, dayOf(i.doneAt))).filter(n=>n >= 0);
   return {open, over:open.filter(i=>i.due && i.due < tday), soon:open.filter(i=>i.due && i.due >= tday && i.due <= addDays(7)),
-    doneIn, done:doneIn.length, onTime:withDue.length ? Math.round(onTime / withDue.length * 100) : null, onTimeN:withDue.length,
+    doneIn, done:doneIn.length, prevDone, dropped, onTime:withDue.length ? Math.round(onTime / withDue.length * 100) : null, onTimeN:withDue.length,
     spans, avg:spans.length ? Math.round(spans.reduce((a, b)=>a + b, 0) / spans.length * 10) / 10 : null,
     created:list.filter(i=>dayOf(i.created) >= from).length, from};
 }
@@ -1514,7 +1579,7 @@ function colChart(w, title, cols, o={}){
 function weekChart(w, list, weeks){
   const ws = dashWeeks(weeks), idx = d=>ws.indexOf(weekStart(d));
   const made = ws.map(()=>0), done = ws.map(()=>0);
-  list.forEach(i=>{ const a = idx(dayOf(i.created)); if (a >= 0) made[a]++; if (i.doneAt){ const c = idx(dayOf(i.doneAt)); if (c >= 0) done[c]++; } });
+  list.forEach(i=>{ const a = idx(dayOf(i.created)); if (a >= 0) made[a]++; if (completed(i)){ const c = idx(dayOf(i.doneAt)); if (c >= 0) done[c]++; } });
   const top = niceTop(Math.max(1, ...made, ...done));
   return card(w, t('dash.weekly'), `<div class="wk" style="--n:${weeks}">${yGrid(top)}
       <div class="wk-cols">${ws.map((d, k)=>`<div class="wk-col" data-tip="${esc(t('dash.weekOf', {date:fmtDay(d)}))} · ${esc(t('dash.created'))}: ${made[k]} · ${esc(t('dash.completed'))}: ${done[k]}">
@@ -1546,7 +1611,7 @@ function clientsChart(w, rows){
   const max = Math.max(1, ...rows.map(r=>r.open)), tday = today();
   return card(w, t('dash.clients'), rows.some(r=>r.open) ? `<div class="hb">${rows.map(r=>`<div class="hb-row" data-tip="${esc(r.b.name)} · ${esc(t('dash.open'))}: ${r.open} · ${esc(t('dash.over'))}: ${r.over}">
       <button class="hb-l link-btn" data-act="switch-board" data-id="${r.b.id}" data-bidi>${bAv(r.b, 'xs')}<span>${esc(r.b.name)}</span></button>
-      <span class="hb-track st">${r.open - r.over ? `<span class="hb-bar" style="width:${(r.open - r.over) / max * 100}%"></span>` : ''}${r.over ? `<span class="hb-bar s2" style="width:${r.over / max * 100}%"></span>` : ''}</span><span class="hb-n">${r.open}</span></div>`).join('')}</div>` : `<p class="muted-p">${esc(t('dash.noOpen'))}</p>`,
+      <span class="hb-track st">${(gap=>`${r.open - r.over ? `<span class="hb-bar" style="width:calc(${(r.open - r.over) / max * 100}% - ${gap}px)"></span>` : ''}${r.over ? `<span class="hb-bar s2" style="width:calc(${r.over / max * 100}% - ${gap}px)"></span>` : ''}`)(r.over && r.open - r.over ? 1 : 0)}</span><span class="hb-n">${r.open}</span></div>`).join('')}</div>` : `<p class="muted-p">${esc(t('dash.noOpen'))}</p>`,
     {legend:legend([['s1', t('dash.onTrack')], ['s2', t('dash.over')]])});
 }
 function taskList(w, list, title, empty){
@@ -1592,8 +1657,10 @@ function renderDash(){
       // open tasks by when they are due: overdue, this week, the next weeks, later, no date
       const c = [0,0,0,0,0,0,0];
       st.open.forEach(i=>{ if (!i.due){ c[6]++; return; } if (i.due < tday){ c[0]++; return; } const k = Math.round(daysBetween(wk0, weekStart(i.due)) / 7); c[Math.min(5, 1 + k)]++; });
-      const keys = ['over','thisWeek','nextWeek','in2','in3','later','noDate'];
-      return colChart(w, t('dash.deadlines'), keys.map((k, ix)=>({label:t('dash.dl.' + k), short:t('dash.dls.' + k), n:c[ix], cls:ix === 0 ? 's2' : ix === 6 ? 's0' : 's1'})), {empty:t('dash.noOpen'), meta:st.open.length});
+      // tasks without a due date are counted in the header, not as a bar, so they don't flatten the dated ones
+      const keys = ['over','thisWeek','nextWeek','in2','in3','later'];
+      return colChart(w, t('dash.deadlines'), keys.map((k, ix)=>({label:t('dash.dl.' + k), short:t('dash.dls.' + k), n:c[ix], cls:ix === 0 ? 's2' : 's1'})),
+        {empty:c[6] ? tn('dash.allNoDate', c[6]) : t('dash.noOpen'), meta:esc(String(st.open.length - c[6])) + (c[6] ? ` · ${esc(tn('dash.noDateN', c[6]))}` : ''), legend:legend([['s2', t('dash.dl.over')], ['s1', t('dash.dated')]])});
     },
     cycle:w=>{
       // how long finished tasks took, start → done
@@ -1624,12 +1691,13 @@ function renderDash(){
   // fewer charts on screen → more room for each; two time charts side by side only when both are on
   const size = charts.length <= 2 ? 'roomy' : charts.length <= 5 ? 'mid' : '';
   dashview.className = 'dashview' + (size ? ' ' + size : '');
-  dashview.innerHTML = `<div class="dash-bar"><span class="dash-scope">${esc(t('dash.period', {date:fmtDay(st.from)}))}</span><div class="dash-ctl">${custom}${rangeSel}</div></div>
+  const filt = filtering() ? `<span class="dash-filt">${I.funnel}${esc(t('dash.filtered'))}<button class="link-btn" data-act="clear-filters">${esc(t('qf.clear'))}</button></span>` : '';
+  dashview.innerHTML = `<div class="dash-bar"><span class="dash-scope">${esc(t('dash.period', {date:fmtDay(st.from)}))} · ${esc(tn('dash.createdN', st.created))}</span>${filt}<div class="dash-ctl">${custom}${rangeSel}</div></div>
     ${on.has('kpis') ? `<div class="kpis">
       ${tile(t('dash.open'), st.open.length)}
       ${tile(t('dash.over'), st.over.length, st.over.length ? esc(t('dash.overSub')) : '', st.over.length ? 'bad' : '')}
       ${tile(t('dash.soon'), st.soon.length)}
-      ${tile(t('dash.done'), st.done, esc(tn('dash.createdN', st.created)))}
+      ${tile(t('dash.done'), st.done, [st.prevDone || st.done ? esc(t('dash.vsPrev', {n:st.prevDone})) : '', st.dropped ? esc(tn('dash.droppedN', st.dropped)) : ''].filter(Boolean).join(' · ') || esc(tn('dash.createdN', st.created)))}
       ${tile(t('dash.onTime'), st.onTime == null ? '—' : st.onTime + '%', st.onTimeN ? esc(tn('dash.ofDue', st.onTimeN)) : esc(t('dash.noDue')))}
       ${tile(t('dash.avg'), st.avg == null ? '—' : esc(String(st.avg)), st.avg == null ? '' : esc(t('dash.daysUnit')))}
     </div>` : ''}
@@ -1695,6 +1763,7 @@ function renderBell(){
 }
 function render(){
   if (screen !== 'app') return;
+  buildRelIx();
   const v = P.view, all = isAll(), b = curBoard(), name = all ? t('nav.allBoards') : (b?.name || ws?.name || '');
   board.hidden = v !== 'board'; listview.hidden = v !== 'list' && v !== 'archive'; sheetview.hidden = v !== 'table'; calview.hidden = v !== 'cal'; dashview.hidden = v !== 'dash';
   const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : v === 'table' ? t('view.tableOf', {name}) : v === 'cal' ? t('view.calOf', {name}) : v === 'dash' ? t('view.dashOf', {name}) : name;
@@ -1708,6 +1777,10 @@ function render(){
   const arch = S.issues.filter(i=>i.archived && (all || (b && i.boardId===b.id))).length;
   $('#summary').textContent = v === 'archive' ? tn('summary.archived', arch) : pool.length ? tn('summary.open', open.length) + (over ? t('summary.overdueSuffix', {n:over}) : '') : '';
   $$('.qf[data-qf]').forEach(x=>x.setAttribute('aria-pressed', qf.has(x.dataset.qf)));
+  const dir = peopleDir(), pf0 = $('#peopleF');
+  [...peopleF].forEach(k=>{ if (k !== '-' && !dir.has(k)) peopleF.delete(k); });
+  pf0.hidden = dir.size < 2 && !peopleF.size; pf0.setAttribute('aria-pressed', peopleF.size > 0);
+  pf0.innerHTML = peopleBtnHTML(dir);
   const tf = $('#typeF'); tf.setAttribute('aria-pressed', !!typeFilter);
   tf.innerHTML = esc(typeFilter ? t('filter.typeIs', {name:typeOf(typeFilter).name}) : t('filter.type')) + I.chev;
   const pf = $('#platF'); pf.setAttribute('aria-pressed', !!platFilter);
@@ -1993,6 +2066,75 @@ pop.addEventListener('keydown', e=>{
   if (e.key === 'Tab'){ closePop(); }
 });
 const chk = on=>on ? `<span class="chk-mark">${I.check}</span>` : '';
+function peopleBtnHTML(dir){
+  if (!peopleF.size) return `<span>${esc(t('pf.people'))}</span>${I.chev}`;
+  const sel = [...peopleF].map(k=>k === '-' ? {name:'?'} : dir.get(k)).filter(Boolean);
+  const label = sel.length === 1 ? (peopleF.has(meKey()) ? t('pf.mine') : pName(sel[0])) : tn('pf.nPeople', sel.length);
+  return `<span class="pf-avs">${sel.slice(0, 3).map(p=>avatar(p, 'xs')).join('')}</span><span data-bidi>${esc(label)}</span>${I.chev}`;
+}
+function peopleMenuHTML(){
+  const dir = peopleDir(), me = meKey(), pool = scopeIssues().filter(i=>!i.archived), cnt = new Map(); let none = 0;
+  pool.forEach(i=>{ const ps = peopleOf(i); if (!ps.length) none++; ps.forEach(p=>{ const k = pKey(p); cnt.set(k, (cnt.get(k) || 0) + 1); }); });
+  const list = [...dir.values()].sort((a, b)=>(b.key === me) - (a.key === me) || (cnt.get(b.key) || 0) - (cnt.get(a.key) || 0) || pName(a).localeCompare(pName(b)));
+  const row = (k, ico, label, n, sub='')=>{ const on = peopleF.has(k);
+    return `<button class="menu-i" role="menuitemcheckbox" aria-checked="${on}" data-act="pf-toggle" data-k="${esc(k)}"><span class="sf-box${on ? ' on' : ''}">${on ? I.check : ''}</span>${ico}<span class="sf-l"><span data-bidi>${esc(label)}</span>${sub ? `<small class="dash-only">${esc(sub)}</small>` : ''}</span><span class="sf-n">${n}</span></button>`; };
+  return `<div class="menu-h">${esc(t('pf.title'))}</div>
+    <button class="menu-i" role="menuitemradio" aria-checked="${!peopleF.size}" data-act="pf-all">${I.users}<span class="sf-l">${esc(t('pf.everyone'))}</span>${chk(!peopleF.size)}</button>
+    ${me && dir.has(me) ? `<button class="menu-i" role="menuitemradio" aria-checked="${peopleF.size === 1 && peopleF.has(me)}" data-act="pf-mine">${avatar(dir.get(me), 'xs')}<span class="sf-l">${esc(t('pf.mine'))}</span>${chk(peopleF.size === 1 && peopleF.has(me))}</button>` : ''}
+    <div class="menu-sep"></div><div class="sf-list dash-pick">${list.map(p=>row(p.key, avatar(p, 'xs'), pName(p) + (p.key === me ? ' ' + t('pf.you') : ''), cnt.get(p.key) || 0, p.email && p.name ? p.email : (p.role ? t('role.' + p.role) : ''))).join('')}
+    ${none ? row('-', `<span class="avatar xs unk">?</span>`, t('pf.unknown'), none) : ''}</div>`;
+}
+function peopleMenuRefresh(){
+  render();
+  const btn = $('#peopleF');
+  if (popAnchor && pop.dataset.id === 'people' && btn){ popAnchor = btn; btn.setAttribute('aria-expanded', 'true'); const sc = $('.sf-list', pop)?.scrollTop || 0; pop.innerHTML = peopleMenuHTML(); const l = $('.sf-list', pop); if (l) l.scrollTop = sc; placePop(); }
+}
+/* ---------- the people on a task (task window) ---------- */
+function peopleField(i, edit){
+  const ps = peopleOf(i), c = creatorOf(i), ck = pKey(c);
+  return `<div class="pp-list">${ps.map(p=>{ const k = pKey(p), isC = k === ck;
+      return `<span class="pp-chip${isC ? ' creator' : ''}" title="${esc(p.email || pName(p))}">${avatar(p, 'xs')}<span class="pp-n" data-bidi>${esc(pName(p))}</span>${isC ? `<small>${esc(t('pp.creator'))}</small>` : ''}${edit && !isC ? `<button class="pp-x" data-act="with-del" data-k="${esc(k)}" aria-label="${esc(t('pp.remove', {name:pName(p)}))}" title="${esc(t('pp.remove', {name:pName(p)}))}">${I.x}</button>` : ''}</span>`; }).join('') || `<span class="t-muted">${esc(t('none'))}</span>`}
+    ${edit ? `<button class="btn subtle sm pp-add" data-act="with-menu" aria-haspopup="menu">${I.plus}${esc(t('pp.add'))}</button>` : ''}</div>`;
+}
+function withMenuHTML(i){
+  const dir = peopleDir(), have = new Set(peopleOf(i).map(pKey));
+  // people who can edit in this workspace (owner and editors), not already on the task
+  const can = [...dir.values()].filter(p=>(p.role === 'owner' || p.role === 'editor') && !have.has(p.key));
+  return `<div class="menu-h">${esc(t('pp.addTitle'))}</div>${can.length ? '<div class="dash-pick">' + can.map(p=>`<button class="menu-i" role="menuitem" data-act="with-add" data-k="${esc(p.key)}">${avatar(p, 'xs')}<span class="sf-l"><span data-bidi>${esc(pName(p))}</span>${p.email && p.name ? `<small class="dash-only">${esc(p.email)}</small>` : ''}</span></button>`).join('') + '</div>'
+    : `<p class="muted-p pop-pad">${esc(isShared() ? t('pp.noneLeft') : t('pp.notShared'))}</p>`}`;
+}
+/* ---------- linked tasks (task window) ---------- */
+let relPick = null, navStack = [];
+function relRow(r, edit){
+  const o = r.i, c = colOf(o), dc = dueClass(o);
+  return `<li class="rel-row${isDone(o) ? ' done' : ''}${o.archived ? ' arch' : ''}" data-rid="${o.id}">
+    <span class="rel-k k-${r.k}">${r.k === 'rel' ? '' : r.k === 'needs' ? I.block : I.rel}${esc(t('rel.k.' + r.k))}</span>
+    <button class="rel-open" data-act="rel-open" data-rid="${o.id}">${typeIcon(o.type)}<span class="rel-key">${esc(key(o))}</span><span class="rel-t" data-bidi>${esc(o.title || t('issue.untitled'))}</span></button>
+    ${o.due && !isDone(o) ? `<span class="due ${dc}">${esc(dueLabel(o))}</span>` : ''}
+    <span class="loz st ${c.cat}" data-bidi>${esc(o.archived ? t('issue.archived') : c.name)}</span>
+    ${edit ? `<button class="btn icon subtle sm rel-x" data-act="rel-del" data-rid="${o.id}" aria-label="${esc(t('rel.remove', {key:key(o)}))}" title="${esc(t('rel.remove', {key:key(o)}))}">${I.x}</button>` : ''}</li>`;
+}
+function relSection(i, edit){
+  const rs = relsOf(i), open = rs.filter(r=>!isDone(r.i) && !r.i.archived).length;
+  return `<section class="m-sec rel-sec">
+    <div class="sec-head"><h3>${esc(t('rel.title'))}</h3>${rs.length ? `<span class="sec-meta">${esc(open ? t('rel.openOf', {open, n:rs.length}) : String(rs.length))}</span>` : ''}
+      ${edit && !relPick ? `<button class="btn subtle sm rel-new" data-act="rel-pick">${I.plus}${esc(t('rel.add'))}</button>` : ''}</div>
+    ${relPick ? `<div class="rel-pick"><select class="ctl" data-k="rel-kind" aria-label="${esc(t('rel.kind'))}">${REL_KINDS.map(k=>`<option value="${k}"${relPick.k === k ? ' selected' : ''}>${esc(t('rel.k.' + k))}</option>`).join('')}</select>
+        <input class="inp" data-k="rel-q" data-bidi placeholder="${esc(t('rel.searchPh'))}" aria-label="${esc(t('rel.searchPh'))}" autocomplete="off" value="${esc(relPick.q)}">
+        <button class="btn subtle sm" data-act="rel-cancel">${esc(t('btn.cancel'))}</button>
+        <ul class="rel-res" role="listbox">${relResults(i)}</ul></div>` : ''}
+    ${rs.length ? `<ul class="rels">${rs.map(r=>relRow(r, edit)).join('')}</ul>` : (relPick ? '' : `<p class="muted-p">${esc(t('rel.none'))}</p>`)}
+  </section>`;
+}
+function relResults(i){
+  const q = norm(relPick?.q || '').toLowerCase(), have = new Set(relsOf(i).map(r=>r.i.id));
+  const pool = S.issues.filter(o=>o.id !== i.id && !have.has(o.id));
+  const hit = q ? pool.filter(o=>(key(o) + ' ' + o.title + ' ' + boardOf(o).name).toLowerCase().includes(q)) : pool;
+  // same board and recent first when nothing is typed
+  hit.sort((a, b)=>(a.archived - b.archived) || ((b.boardId === i.boardId) - (a.boardId === i.boardId)) || (isDone(a) - isDone(b)) || b.updated - a.updated);
+  return hit.slice(0, 8).map(o=>`<li><button class="rel-hit" role="option" data-act="rel-add" data-rid="${o.id}">${typeIcon(o.type)}<span class="rel-key">${esc(key(o))}</span><span class="rel-t" data-bidi>${esc(o.title || t('issue.untitled'))}</span><span class="loz st ${colOf(o).cat}" data-bidi>${esc(colOf(o).name)}</span></button></li>`).join('')
+    || `<li class="muted-p">${esc(t('rel.noHits'))}</li>`;
+}
 function statusMenu(i, withExtras){
   const b = boardOf(i), edit = canEdit();
   if (!edit) return `<button class="menu-i" role="menuitem" data-act="open-issue">${I.open}${esc(t('menu.open'))}</button>
@@ -2050,7 +2192,7 @@ function closeModal(instant){
   if (modalKind === 'issue'){
     const i = get(openId);
     if (i && !i.title.trim() && canEdit()){ i.title = t('issue.untitled'); save(); render(); }
-    openId = null; editingCid = null;
+    openId = null; editingCid = null; navStack = []; relPick = null;
   }
   bDraft = null; tDraft = null; confirmFn = null;
   modalKind = null; shell.inert = false; $('.nav').inert = false;
@@ -2079,8 +2221,10 @@ function openConfirm({title, text, ok, fn}){
 }
 
 /* ----- Issue view ----- */
-function openIssue(id){
+function openIssue(id, viaLink){
   const i = get(id); if (!i) return;
+  if (!viaLink) navStack = [];
+  relPick = null;
   if (composer && !composerText.trim()){ composer = null; render(); }
   openId = id; openFocusId = id; tab = 'comments'; cmtDraft = ''; editingCid = null; lastPct = 0;
   const dlg = showModal(issueHTML(i), 'issue');
@@ -2097,7 +2241,7 @@ function issueHTML(i){
   const companies = [...new Set([...S.boards.map(x=>normLabel(x.name)), ...S.issues.flatMap(x=>x.labels)])].filter(l=>!i.labels.includes(l)).sort();
   return `
   <div class="m-head">
-    <div class="m-crumb">${bAv(b)}<span class="crumb-b" data-bidi>${esc(b.name)}</span><span class="crumb-sep">/</span>${typeIcon(i.type)}<button class="link-btn key" data-act="copy-key" title="${esc(t('menu.copyKey'))}">${esc(key(i))}</button>${i.archived?`<span class="loz arch">${esc(t('issue.archived'))}</span>`:''}${!edit?`<span class="loz ro-loz">${esc(t('role.viewOnly'))}</span>`:''}</div>
+    <div class="m-crumb">${navStack.length && get(navStack.at(-1)) ? `<button class="btn subtle sm m-back" data-act="rel-back" title="${esc(t('rel.backTo', {key:key(get(navStack.at(-1)))}))}">${I.back}<span>${esc(key(get(navStack.at(-1))))}</span></button>` : ''}${bAv(b)}<span class="crumb-b" data-bidi>${esc(b.name)}</span><span class="crumb-sep">/</span>${typeIcon(i.type)}<button class="link-btn key" data-act="copy-key" title="${esc(t('menu.copyKey'))}">${esc(key(i))}</button>${i.archived?`<span class="loz arch">${esc(t('issue.archived'))}</span>`:''}${!edit?`<span class="loz ro-loz">${esc(t('role.viewOnly'))}</span>`:''}</div>
     <div class="m-actions">
       ${edit ? (i.archived ? `<button class="btn sm" data-act="restore">${I.restore}${esc(t('btn.restore'))}</button>` : `<button class="btn icon subtle" data-act="archive-issue" aria-label="${esc(t('menu.archive'))}" title="${esc(t('menu.archive'))}">${I.archive}</button>`)
         + `<button class="btn icon subtle" data-act="del-issue" aria-label="${esc(t('menu.delete'))}" title="${esc(t('menu.delete'))}">${I.trash}</button>` : ''}
@@ -2121,6 +2265,7 @@ function issueHTML(i){
         </form>
         <em class="ed-err" id="linkErr" hidden>${esc(t('links.err'))}</em>` : (i.links.length ? '' : `<p class="muted-p">${esc(t('links.none'))}</p>`)}
       </section>
+      ${relSection(i, edit)}
       <section class="m-sec">
         <div class="sec-head"><h3>${esc(t('f.subtasks'))}</h3>${n ? `<span class="sec-meta" id="stMeta">${esc(t('st.pct', {n:pct}))}</span>` : ''}</div>
         ${n ? `<div class="pbar"><b></b></div>` : ''}
@@ -2149,6 +2294,7 @@ function issueHTML(i){
           <dt>${esc(t('f.company'))}</dt><dd><div class="labels-edit${edit?'':' ro'}">${i.labels.map(l=>`<span class="chip" data-bidi>${esc(l)}${edit?`<button data-act="label-del" data-l="${esc(l)}" aria-label="${esc(t('company.remove', {name:l}))}">${I.x}</button>`:''}</span>`).join('')}${edit ? `<input class="lbl-in" data-k="lbl" data-bidi placeholder="${i.labels.length?'':esc(t('company.add'))}" list="lblList" aria-label="${esc(t('company.add'))}" autocomplete="off">` : (i.labels.length ? '' : `<span class="t-muted">${esc(t('none'))}</span>`)}</div>
             <datalist id="lblList">${companies.map(l=>`<option value="${esc(l)}">`).join('')}</datalist></dd>
           <dt class="full">${esc(t('f.platform'))}</dt><dd class="full">${edit ? platformPicker('set-color', i.color) : (i.color ? `<span class="plat-b on" style="--sw:${i.color}"><i></i>${esc(colorName(i.color))}</span>` : `<span class="t-muted">${esc(t('plat.none'))}</span>`)}</dd>
+          ${isShared() || i.with ? `<dt>${esc(t('pp.field'))}</dt><dd class="pp-dd">${peopleField(i, edit)}</dd>` : ''}
           <dt>${esc(t('f.recur'))}</dt><dd class="rc-dd">${recurField(i, edit)}</dd>
           <dt>${esc(t('f.points'))}</dt><dd>${edit ? `<input class="ctl" type="number" min="0" step="0.5" inputmode="decimal" data-f="points" value="${i.points??''}" placeholder="${esc(t('none'))}" aria-label="${esc(t('f.points'))}">` : `<span class="ro-val${i.points==null?' t-muted':''}">${esc(i.points ?? t('none'))}</span>`}</dd>
           ${S.boards.length > 1 && edit ? `<dt>${esc(t('f.board'))}</dt><dd><select class="ctl" data-f="board" aria-label="${esc(t('f.board'))}">${S.boards.map(x=>`<option value="${x.id}"${x.id===i.boardId?' selected':''}>${esc(x.name)}</option>`).join('')}</select></dd>` : ''}
@@ -2195,8 +2341,10 @@ function refreshIssue(){
   if (modalKind !== 'issue') return;
   const i = get(openId); if (!i) return closeModal();
   const dlg = $('.dialog',layer), body = $('.m-body',dlg), st = body?.scrollTop || 0;
+  const ae = document.activeElement, keepQ = ae?.dataset?.k === 'rel-q' ? [ae.selectionStart, ae.selectionEnd] : null;
   rerender(dlg, issueHTML(i));
   $('.m-body',dlg).scrollTop = st;
+  if (keepQ){ const q = $('[data-k="rel-q"]', dlg); if (q){ q.focus({preventScroll:true}); q.setSelectionRange(...keepQ); } }
   afterIssueRender();
   fx.cmt = null;
 }
@@ -2579,9 +2727,21 @@ layer.addEventListener('input', e=>{
   else if (el.classList.contains('st-text')){ const s = i.subtasks.find(s=>s.id===el.closest('li').dataset.sid); if (s){ s.text = el.value; save(); scheduleRender(); } }
   else if (k === 'cmt') cmtDraft = el.value;
   else if (k === 'l-url') $('#linkErr',layer).hidden = true;
+  else if (k === 'rel-q' && relPick){ relPick.q = el.value; const ul = $('.rel-res', layer); if (ul) ul.innerHTML = relResults(i); }
 });
+// link picker: Enter links the first match, arrows move through the matches, Esc closes only the picker
+layer.addEventListener('keydown', e=>{
+  const el = e.target;
+  if (!relPick || !el.closest?.('.rel-pick')) return;
+  const hits = $$('.rel-hit', layer);
+  if (e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); relPick = null; refreshIssue(); $('[data-act="rel-pick"]', layer)?.focus(); return; }
+  if (el.dataset.k === 'rel-q' && e.key === 'Enter'){ e.preventDefault(); hits[0]?.click(); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){ const ix = hits.indexOf(el), n = e.key === 'ArrowDown' ? ix + 1 : ix - 1;
+    if (n < 0){ e.preventDefault(); $('[data-k="rel-q"]', layer)?.focus(); } else if (hits[n]){ e.preventDefault(); hits[n].focus(); } }
+}, true);
 layer.addEventListener('change', e=>{
   const el = e.target, k = el.dataset?.k || '';
+  if (k === 'rel-kind' && relPick){ relPick.k = REL_KINDS.includes(el.value) ? el.value : 'rel'; return; }
   if (modalKind === 'create'){
     if (el.name === 'type') el.previousElementSibling.outerHTML = typeIcon(el.value);
     if (el.name === 'priority') el.previousElementSibling.outerHTML = prioIcon(el.value);
@@ -2826,6 +2986,32 @@ document.addEventListener('click', async e=>{
 
     /* filters */
     case 'qf': qf.has(b.dataset.qf) ? qf.delete(b.dataset.qf) : qf.add(b.dataset.qf); render(); break;
+    case 'people-filter-menu': openPop(b, peopleMenuHTML(), 'people'); break;
+    case 'pf-toggle': { const k = b.dataset.k; peopleF.has(k) ? peopleF.delete(k) : peopleF.add(k); peopleMenuRefresh(); break; }
+    case 'pf-all': peopleF.clear(); closePop(); render(); break;
+    case 'pf-mine': peopleF = new Set([meKey()]); closePop(); render(); break;
+    case 'with-menu': { const it = get(openId); if (it) openPop(b, withMenuHTML(it), 'with'); break; }
+    case 'with-add': { const it = get(openId), p = peopleDir().get(b.dataset.k); closePop(); if (!it || !p || !canEdit()) break;
+      if (peopleOf(it).some(x=>pKey(x) === p.key)) break;
+      it.with = [...(it.with || []), normBy({uid:p.uid, name:p.name, email:p.email, photo:p.photo})];
+      touch(it, t('h.withAdd', {name:pName(p)})); save(); render(); refreshIssue(); break; }
+    case 'with-del': { const it = get(openId), k = b.dataset.k; if (!it || !it.with || !canEdit()) break;
+      const p = it.with.find(x=>pKey(x) === k); it.with = it.with.filter(x=>pKey(x) !== k); if (!it.with.length) delete it.with;
+      touch(it, t('h.withDel', {name:pName(p)})); save(); render(); refreshIssue(); break; }
+    case 'rel-pick': relPick = {k:'rel', q:''}; refreshIssue(); $('[data-k="rel-q"]', layer)?.focus(); break;
+    case 'rel-cancel': relPick = null; refreshIssue(); break;
+    case 'rel-add': { const it = get(openId), o = get(b.dataset.rid); if (!it || !o || !canEdit() || !relPick) break;
+      const k = relPick.k; it.rel = [...(it.rel || []).filter(r=>r.id !== o.id), {id:o.id, k}];
+      // a link made from the other side is replaced, so the pair is stored once
+      if (o.rel?.some(r=>r.id === it.id)){ o.rel = o.rel.filter(r=>r.id !== it.id); if (!o.rel.length) delete o.rel; touch(o); }
+      touch(it, t('h.relAdd', {kind:t('rel.k.' + k), key:key(o)})); relPick = null; save(); render(); refreshIssue();
+      $(`.rel-row[data-rid="${o.id}"]`, layer)?.classList.add('in'); $('[data-act="rel-pick"]', layer)?.focus({preventScroll:true}); break; }
+    case 'rel-del': { const it = get(openId), o = get(b.dataset.rid); if (!it || !canEdit()) break; const rid = b.dataset.rid;
+      if (it.rel?.some(r=>r.id === rid)){ it.rel = it.rel.filter(r=>r.id !== rid); if (!it.rel.length) delete it.rel; }
+      if (o?.rel?.some(r=>r.id === it.id)){ o.rel = o.rel.filter(r=>r.id !== it.id); if (!o.rel.length) delete o.rel; touch(o); }
+      touch(it, t('h.relDel', {key:o ? key(o) : rid})); save(); render(); refreshIssue(); break; }
+    case 'rel-open': { const o = get(b.dataset.rid); if (!o || !openId) break; navStack.push(openId); if (navStack.length > 20) navStack.shift(); openIssue(o.id, true); break; }
+    case 'rel-back': { const id = navStack.pop(); if (id && get(id)) openIssue(id, true); break; }
     case 'type-filter-menu':
       openPop(b, `<div class="menu-h">${esc(t('filter.showType'))}</div><button class="menu-i" role="menuitem" data-act="type-filter" data-t="">${esc(t('filter.allTypes'))}${chk(!typeFilter)}</button>
         ${S.types.map(x=>`<button class="menu-i" role="menuitem" data-act="type-filter" data-t="${x.id}">${typeSVG(x)}<span data-bidi>${esc(x.name)}</span>${chk(typeFilter===x.id)}</button>`).join('')}`, '');
@@ -2837,7 +3023,7 @@ document.addEventListener('click', async e=>{
         <button class="menu-i" role="menuitem" data-act="plat-filter" data-p="none"><i class="pf-dot none"></i>${esc(t('filter.noPlatform'))}${chk(platFilter==='none')}</button>`, '');
       break;
     case 'plat-filter': platFilter = b.dataset.p || null; closePop(); render(); break;
-    case 'clear-filters': qf.clear(); typeFilter = null; platFilter = null; query = ''; $('#q').value = ''; sheetF = {}; render(); break;
+    case 'clear-filters': qf.clear(); peopleF.clear(); typeFilter = null; platFilter = null; query = ''; $('#q').value = ''; sheetF = {}; render(); break;
     case 's-filter': openPop(b, sheetFilterMenu(b.dataset.k), 'sf:' + b.dataset.k); break;
     case 's-fval': { const k = b.dataset.k, v = b.dataset.v; const set = new Set(sheetF[k] || []); set.has(v) ? set.delete(v) : set.add(v); sheetF[k] = set.size ? set : undefined; sheetFRefresh(k); break; }
     case 's-fall': { sheetF[b.dataset.k] = undefined; sheetFRefresh(b.dataset.k); break; }
@@ -3458,22 +3644,27 @@ $('#importFile').addEventListener('change', async e=>{
 
 /* ================= Theme, language, shell ================= */
 const sysDark = matchMedia('(prefers-color-scheme: dark)');
-const THEMES = ['light','dark','purple'];
+const THEMES = ['light','dark','purple','purplelight','purpledark','blackred','blackyellow'];
+const DARK_THEMES = new Set(['dark','purpledark','blackred','blackyellow']);
 const effectiveTheme = ()=>THEMES.includes(P.theme) ? P.theme : (sysDark.matches ? 'dark' : 'light');
-const themeIcon = ()=>({light:I.sun, dark:I.moon, purple:I.palette})[effectiveTheme()];
-const THEME_SW = {light:['#FFFFFF','linear-gradient(135deg,#F4F6FA,#E9F2FF)'], dark:['#2C333A','linear-gradient(135deg,#1D2125,#161A1D)'], purple:['linear-gradient(90deg,#4A2373,#7E4CB8)','linear-gradient(135deg,#FAF7FE,#EBDFFA)']};
+const themeIcon = ()=>{ const th = effectiveTheme(); return th === 'light' ? I.sun : th === 'dark' ? I.moon : I.palette; };
+// swatch: [header, page, accent]
+const THEME_SW = {light:['#FFFFFF','linear-gradient(135deg,#F4F6FA,#E9F2FF)','#0C66E4'], dark:['#2C333A','linear-gradient(135deg,#1D2125,#161A1D)','#579DFF'],
+  purple:['linear-gradient(90deg,#4A2373,#7E4CB8)','linear-gradient(135deg,#FAF7FE,#EBDFFA)','#6B3FA0'], purplelight:['linear-gradient(90deg,#F1E8FD,#E4D4FB)','linear-gradient(135deg,#FDFBFF,#F3ECFD)','#8A5BD8'],
+  purpledark:['linear-gradient(90deg,#24123B,#3E2066)','linear-gradient(135deg,#1C1428,#130D1C)','#B18CF2'], blackred:['#0B0B0D','linear-gradient(135deg,#141416,#0B0B0D)','#E5484D'],
+  blackyellow:['#0B0B0D','linear-gradient(135deg,#141416,#0B0B0D)','#F5C518']};
 function themePicker(){
   return `<div class="menu-h th">${esc(t('theme.title'))}</div><div class="theme-row" role="group" aria-label="${esc(t('theme.title'))}">${THEMES.map(th=>
-    `<button type="button" class="theme-opt" data-act="set-theme" data-th="${th}" aria-pressed="${th===effectiveTheme()}"><span class="sw-t"><i style="background:${THEME_SW[th][0]}"></i><i style="background:${THEME_SW[th][1]}"></i></span>${esc(t('theme.'+th))}</button>`).join('')}</div>`;
+    `<button type="button" class="theme-opt" data-act="set-theme" data-th="${th}" aria-pressed="${th===effectiveTheme()}"><span class="sw-t"><i style="background:${THEME_SW[th][0]}"></i><i style="background:${THEME_SW[th][1]}"></i><b style="background:${THEME_SW[th][2]}"></b></span>${esc(t('theme.'+th))}</button>`).join('')}</div>`;
 }
 function setTheme(th, animate){
   if (th){ P.theme = th; savePrefs(); }
-  const root = document.documentElement, apply = ()=>{ root.dataset.theme = effectiveTheme(); };
+  const root = document.documentElement, apply = ()=>{ const th = effectiveTheme(); root.dataset.theme = th; root.dataset.tone = DARK_THEMES.has(th) ? 'dark' : 'light'; };
   // Cross-fade the whole page on the GPU instead of transitioning every element's colors.
   if (animate && !reduce && document.startViewTransition && root.dataset.theme !== effectiveTheme()) document.startViewTransition(apply);
   else apply();
   const btn = $('#themeBtn'); if (btn){ btn.innerHTML = themeIcon(); btn.title = btn.ariaLabel = t('nav.theme'); btn.setAttribute('aria-haspopup', 'menu'); }
-  const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = {light:'#FFFFFF', dark:'#1D2125', purple:'#4A2373'}[effectiveTheme()];
+  const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = {light:'#FFFFFF', dark:'#1D2125', purple:'#4A2373', purplelight:'#F1E8FD', purpledark:'#24123B', blackred:'#0B0B0D', blackyellow:'#0B0B0D'}[effectiveTheme()];
 }
 sysDark.addEventListener?.('change', ()=>{ if (!P.theme) setTheme(null); });
 function applyShell(){ shell.classList.toggle('side-closed', !P.side); }
