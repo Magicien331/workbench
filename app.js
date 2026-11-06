@@ -2270,7 +2270,8 @@ board.addEventListener('submit', e=>{
   const b = isAll() ? boardById(composerBoard) : curBoard();
   if (!resolveStatus(b, composer)){ toast(t('toast.noColumnHere', {board:b.name})); return; }
   composerText = ''; composerFocus = true;
-  createIssue({title:txt, type:composerType, boardId:b.id, status:composer, labels:[normLabel(b.name)]});
+  const i = createIssue({title:txt, type:composerType, boardId:b.id, status:composer, labels:[normLabel(b.name)]});
+  toast(isAll() ? t('toast.createdIn', {key:key(i), board:b.name}) : t('toast.created', {key:key(i)}), {action:t('btn.openTask'), open:true, sub:i.title, fn:()=>{ if (!composerText.trim()) closeComposer(); openIssue(i.id); }});
 });
 document.addEventListener('pointerdown', e=>{
   if (composer && !e.target.closest('.composer') && !e.target.closest('[data-act="add-inline"]') && !e.target.closest('#layer') && !composerText.trim()) closeComposer();
