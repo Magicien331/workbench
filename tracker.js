@@ -1,4 +1,4 @@
-// The "task tracker" sheet Elizabeth keeps in Google Sheets ("מעקב משימות"), rebuilt cell for cell:
+// The "task tracker" sheet kept in Google Sheets ("מעקב משימות"), rebuilt cell for cell:
 // same columns, widths, fonts, table style, dropdowns, date check and colour rules, so the file the site
 // exports opens exactly like hers and can be imported back.
 import { zipFiles, xmlText, colName, isoToSerial } from './xlsx.js';

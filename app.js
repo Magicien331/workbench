@@ -3599,7 +3599,7 @@ async function readBackupFile(f){
   }
   return JSON.parse(await f.text());
 }
-/* ================= Task-tracker sheet (Elizabeth's "מעקב משימות") =================
+/* ================= Task-tracker sheet ("מעקב משימות", kept in Google Sheets) =================
    Columns: task, priority, client, status, start, due, documents, notes. Clients are boards, statuses are
    columns. Import adds new rows and updates matching tasks (same client + same task name); export writes
    the same sheet back. Tasks that are on the site but not in the sheet are left alone. */
