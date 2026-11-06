@@ -1054,6 +1054,48 @@ function setTitleW(w, save){
   const h = $('.col-rz', tb); if (h) h.setAttribute('aria-valuenow', w || $('.h-title', tb)?.offsetWidth || '');
   if (save){ if (w) P.sheetTitleW = w; else delete P.sheetTitleW; savePrefs(); }
 }
+/* ----- drag a header to move its column ----- */
+let colDrag = null, swallowClick = false;
+sheetview.addEventListener('pointerdown', e=>{
+  const th = e.target.closest('.sheet thead th'); if (!th || e.button > 0 || e.pointerType === 'touch') return;
+  if (e.target.closest('.col-rz, .s-filt')) return;
+  const k = [...th.classList].find(c=>c.startsWith('h-'))?.slice(2); if (!k || SHEET_PINNED.includes(k)) return;
+  colDrag = {k, th, x:e.clientX, y:e.clientY, id:e.pointerId, on:false};
+});
+function colDropIndex(x){
+  // where the column would land: before the first movable header whose middle is past the pointer (reading direction aware)
+  const ths = $$('.sheet thead th', sheetview).filter(h=>{ const k = [...h.classList].find(c=>c.startsWith('h-'))?.slice(2); return k && !SHEET_PINNED.includes(k); });
+  const r = rtl(); let ix = ths.length;
+  for (let n = 0; n < ths.length; n++){ const b = ths[n].getBoundingClientRect(), mid = b.left + b.width / 2; if (r ? x > mid : x < mid){ ix = n; break; } }
+  return {ix, ths};
+}
+sheetview.addEventListener('pointermove', e=>{
+  const d = colDrag; if (!d || e.pointerId !== d.id) return;
+  if (!d.on){ if (Math.abs(e.clientX - d.x) < 6) return; d.on = true; d.th.classList.add('col-lift'); document.body.classList.add('col-moving');
+    d.ghost = document.createElement('div'); d.ghost.className = 'col-ghost'; d.ghost.textContent = t('x.col.' + d.k); document.body.appendChild(d.ghost);
+    d.bar = document.createElement('div'); d.bar.className = 'col-bar'; document.body.appendChild(d.bar); try { d.th.setPointerCapture(e.pointerId); } catch {} }
+  d.ghost.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 14}px)`;
+  const {ix, ths} = colDropIndex(e.clientX), sv = sheetview.getBoundingClientRect(), r = rtl();
+  const edge = ix < ths.length ? ths[ix].getBoundingClientRect() : ths.at(-1).getBoundingClientRect();
+  const bx = ix < ths.length ? (r ? edge.right : edge.left) : (r ? edge.left : edge.right);
+  Object.assign(d.bar.style, {left:(bx - 1) + 'px', top:sv.top + 'px', height:Math.min(sv.height, innerHeight - sv.top) + 'px'}); d.ix = ix;
+  // scroll sideways near the edges
+  if (e.clientX < sv.left + 40) sheetview.scrollLeft -= 14; else if (e.clientX > sv.right - 40) sheetview.scrollLeft += 14;
+});
+const colDragEnd = e=>{
+  const d = colDrag; if (!d || (e && e.pointerId !== d.id)) return; colDrag = null;
+  if (!d.on) return;
+  d.ghost?.remove(); d.bar?.remove(); d.th.classList.remove('col-lift'); document.body.classList.remove('col-moving');
+  swallowClick = true; setTimeout(()=>{ swallowClick = false; }, 0);
+  if (e?.type === 'pointercancel' || d.ix == null) return;
+  // the drop index counts the visible movable columns; map it onto the full order, where hidden columns keep their place
+  const visible = sheetCols().filter(k=>!SHEET_PINNED.includes(k)), from = visible.indexOf(d.k);
+  const target = visible.filter(k=>k !== d.k)[d.ix > from ? d.ix - 1 : d.ix];
+  const without = sheetAllCols().slice(SHEET_PINNED.length).filter(k=>k !== d.k);
+  moveSheetCol(d.k, target ? without.indexOf(target) : without.length); render();
+};
+sheetview.addEventListener('pointerup', colDragEnd); sheetview.addEventListener('pointercancel', colDragEnd);
+sheetview.addEventListener('click', e=>{ if (swallowClick){ e.preventDefault(); e.stopPropagation(); swallowClick = false; } }, true);
 let rz = null;
 sheetview.addEventListener('pointerdown', e=>{
   const h = e.target.closest('.col-rz'); if (!h || e.button > 0) return;
@@ -1079,14 +1121,30 @@ sheetview.addEventListener('keydown', e=>{
   else if (e.key === 'Home'){ e.preventDefault(); setTitleW(0, true); }
 });
 // every column the table can show; the task name is always shown, the rest can be hidden (P.sheetHide, per device)
-const sheetAllCols = ()=>['key','title','status','prio',...(isAll() ? ['board'] : []),'type','plat','start','due','company','desc','subs','by'];
+// the code and task name stay first (they stay put while scrolling sideways); the rest follow the saved order
+const SHEET_PINNED = ['key','title'];
+const sheetDefaultRest = ()=>['status','prio',...(isAll() ? ['board'] : []),'type','plat','start','due','company','desc','subs','by'];
+function sheetAllCols(){
+  const def = sheetDefaultRest(), saved = Array.isArray(P.sheetOrder) ? P.sheetOrder.filter(k=>def.includes(k)) : [];
+  // a column missing from the saved order (new, or the board column) goes back to where it sits by default
+  const rest = saved.slice(); def.forEach((k, ix)=>{ if (rest.includes(k)) return; const after = def.slice(0, ix).reverse().find(x=>rest.includes(x)); rest.splice(after ? rest.indexOf(after) + 1 : 0, 0, k); });
+  return [...SHEET_PINNED, ...rest];
+}
+function moveSheetCol(k, to){
+  // to: index among the movable columns
+  const rest = sheetAllCols().slice(SHEET_PINNED.length), from = rest.indexOf(k); if (from < 0) return;
+  rest.splice(from, 1); rest.splice(Math.max(0, Math.min(rest.length, to)), 0, k);
+  P.sheetOrder = rest; savePrefs();
+}
 const sheetHidden = ()=>new Set((Array.isArray(P.sheetHide) ? P.sheetHide : []).filter(k=>k !== 'title'));
 function sheetCols(){ const h = sheetHidden(); return sheetAllCols().filter(k=>!h.has(k)); }
 function sheetColsMenu(){
-  const h = sheetHidden();
-  return `<div class="menu-h">${esc(t('sheet.colsShow'))}</div><div class="sf-list dash-pick">${sheetAllCols().map(k=>{ const on = !h.has(k), lock = k === 'title';
-      return `<button class="menu-i" role="menuitemcheckbox" aria-checked="${on}" data-act="s-col" data-k="${k}"${lock ? ' aria-disabled="true"' : ''}><span class="sf-box${on ? ' on' : ''}${lock ? ' lock' : ''}">${on ? I.check : ''}</span><span class="sf-l">${esc(t('x.col.' + k))}${lock ? `<small class="dash-only">${esc(t('sheet.colAlways'))}</small>` : ''}</span></button>`; }).join('')}</div>
-    ${h.size ? `<div class="menu-sep"></div><div class="dash-pick-f"><button class="link-btn" data-act="s-colsall">${esc(t('sheet.colsAll'))}</button></div>` : ''}`;
+  const h = sheetHidden(), all = sheetAllCols(), n = all.length, moved = Array.isArray(P.sheetOrder) && P.sheetOrder.length;
+  return `<div class="menu-h">${esc(t('sheet.colsShow'))}</div><div class="sf-list dash-pick cols-pick">${all.map((k, ix)=>{ const on = !h.has(k), lock = k === 'title', pinned = SHEET_PINNED.includes(k), name = t('x.col.' + k);
+      return `<div class="col-row"><button class="menu-i" role="menuitemcheckbox" aria-checked="${on}" data-act="s-col" data-k="${k}"${lock ? ' aria-disabled="true"' : ''}><span class="sf-box${on ? ' on' : ''}${lock ? ' lock' : ''}">${on ? I.check : ''}</span><span class="sf-l">${esc(name)}${lock ? `<small class="dash-only">${esc(t('sheet.colAlways'))}</small>` : pinned ? `<small class="dash-only">${esc(t('sheet.colPinned'))}</small>` : ''}</span></button>
+        ${pinned ? '' : `<span class="col-mv"><button class="btn icon subtle sm" data-act="s-colmv" data-k="${k}" data-d="-1"${ix <= SHEET_PINNED.length ? ' disabled' : ''} aria-label="${esc(t('sheet.colEarlier', {col:name}))}" title="${esc(t('sheet.colEarlier', {col:name}))}">${I.chev}</button><button class="btn icon subtle sm down" data-act="s-colmv" data-k="${k}" data-d="1"${ix >= n - 1 ? ' disabled' : ''} aria-label="${esc(t('sheet.colLater', {col:name}))}" title="${esc(t('sheet.colLater', {col:name}))}">${I.chev}</button></span>`}</div>`; }).join('')}</div>
+    <p class="cols-hint">${esc(t('sheet.dragHint'))}</p>
+    ${h.size || moved ? `<div class="menu-sep"></div><div class="dash-pick-f">${h.size ? `<button class="link-btn" data-act="s-colsall">${esc(t('sheet.colsAll'))}</button>` : '<span></span>'}${moved ? `<button class="link-btn" data-act="s-colsorder">${esc(t('sheet.colsOrder'))}</button>` : ''}</div>` : ''}`;
 }
 function sheetColsRefresh(){
   render();
@@ -2182,6 +2240,7 @@ function placePop(){
   pop.style.left = left+'px'; pop.style.top = top+'px';
 }
 function closePop(){
+  ctxRow?.classList.remove('ctx-on'); ctxRow = null; pop.classList.remove('ctx');
   if (!popAnchor) return;
   popAnchor.setAttribute('aria-expanded','false'); popAnchor = null;
   pop.classList.remove('on'); setTimeout(()=>{ if (!popAnchor) pop.hidden = true; }, 150);
@@ -2277,6 +2336,75 @@ function statusMenu(i, withExtras){
   <button class="menu-i" role="menuitem" data-act="archive-issue">${I.archive}${esc(t('menu.archive'))}</button>
   <button class="menu-i danger" role="menuitem" data-act="del-issue">${I.trash}${esc(t('menu.delete'))}</button>` : ''}`;
 }
+/* ----- quick actions for one task: right-click (or long-press) in the list, table, board and calendar, and the card's ⋯ button ----- */
+function ctxMenu(i){
+  const edit = canEdit(), b = boardOf(i), tday = today();
+  const headLine = `<div class="ctx-h">${typeIcon(i.type)}<span class="ctx-key">${esc(key(i))}</span><span class="ctx-t" data-bidi>${esc(i.title || t('issue.untitled'))}</span></div>`;
+  const open = `<button class="menu-i" role="menuitem" data-act="open-issue">${I.open}${esc(t('menu.open'))}<kbd>Enter</kbd></button>`;
+  const copy = `<button class="menu-i" role="menuitem" data-act="copy-key">${I.copy}${esc(t('menu.copyKey'))}</button>`;
+  if (!edit) return headLine + open + copy;
+  if (i.archived) return `${headLine}${open}<button class="menu-i" role="menuitem" data-act="restore">${I.restore}${esc(t('btn.restore'))}</button>${copy}
+    <div class="menu-sep"></div><button class="menu-i danger" role="menuitem" data-act="del-issue">${I.trash}${esc(t('menu.delete'))}</button>`;
+  const dues = [['today', tday], ['tomorrow', addDays(1)], ['week', addDays(7)], ['none', '']];
+  return `${headLine}${open}
+    <div class="menu-sep"></div><div class="menu-h">${esc(t('menu.moveTo'))}</div>
+    <div class="ctx-status">${b.columns.map(c=>`<button class="ctx-st${c.id === i.status ? ' on' : ''}" role="menuitemradio" aria-checked="${c.id === i.status}" data-act="set-status" data-status="${c.id}">${lozC(c)}</button>`).join('')}</div>
+    <div class="menu-h">${esc(t('f.priority'))}</div>
+    <div class="ctx-row" role="group" aria-label="${esc(t('f.priority'))}">${PRIOS.map(p=>`<button class="ctx-chip${p === i.priority ? ' on' : ''}" data-act="ctx-prio" data-p="${p}" aria-pressed="${p === i.priority}" title="${esc(prioName(p))}" aria-label="${esc(prioName(p))}">${prioIcon(p)}</button>`).join('')}</div>
+    <div class="menu-h">${esc(t('f.due'))}${i.due ? ` <span class="ctx-cur">${esc(dueLabel(i))}</span>` : ''}</div>
+    <div class="ctx-row">${dues.map(([k, d])=>`<button class="ctx-chip txt${(i.due || '') === d ? ' on' : ''}" data-act="ctx-due" data-d="${d}" aria-pressed="${(i.due || '') === d}">${esc(t('ctx.due.' + k))}</button>`).join('')}</div>
+    <div class="menu-h">${esc(t('f.platform'))}${i.color ? ` <span class="ctx-cur">${esc(platLabelOf(i.color))}</span>` : ''}</div>
+    <div class="ctx-row ctx-plat" role="group" aria-label="${esc(t('f.platform'))}"><button class="ctx-dot none${!i.color ? ' on' : ''}" data-act="set-color" data-c="" aria-pressed="${!i.color}" title="${esc(t('plat.none'))}" aria-label="${esc(t('plat.none'))}"></button>${[...PLATFORMS.map(([n, h])=>[platLabel(n), h]), ...EXTRA.map(([n, h])=>[colorName(h), h])].map(([label, h])=>`<button class="ctx-dot${i.color === h ? ' on' : ''}" style="--sw:${h}" data-act="set-color" data-c="${h}" aria-pressed="${i.color === h}" title="${esc(label)}" aria-label="${esc(label)}"></button>`).join('')}</div>
+    <div class="menu-sep"></div>
+    ${copy}
+    <button class="menu-i" role="menuitem" data-act="dup-issue">${I.plus}${esc(t('ctx.dup'))}</button>
+    <button class="menu-i" role="menuitem" data-act="archive-issue">${I.archive}${esc(t('menu.archive'))}</button>
+    <button class="menu-i danger" role="menuitem" data-act="del-issue">${I.trash}${esc(t('menu.delete'))}</button>`;
+}
+// a 1×1 point the menu opens from, so it can appear right where the mouse was
+const ctxAnchor = Object.assign(document.createElement('span'), {className:'ctx-anchor'}); ctxAnchor.setAttribute('aria-hidden', 'true'); document.body.appendChild(ctxAnchor);
+let ctxRow = null;
+function openCtx(i, x, y, rowEl){
+  if (!i) return;
+  closePop();
+  Object.assign(ctxAnchor.style, {left:x + 'px', top:y + 'px'});
+  openPop(ctxAnchor, ctxMenu(i), i.id); pop.classList.add('ctx');
+  ctxRow = rowEl || null; ctxRow?.classList.add('ctx-on');
+}
+// a right-click focuses a table cell before the menu event: remember whether you were already typing there
+let rcTyping = false;
+document.addEventListener('pointerdown', e=>{ if (e.button === 2){ const f = e.target.closest?.('input, textarea'); rcTyping = !!f && document.activeElement === f; } }, true);
+const ctxTarget = el=>el.closest('#listview tbody tr[data-id], #sheetview tbody tr[data-id], #board .card[data-id], #calview .cal-chip[data-id]');
+document.addEventListener('contextmenu', e=>{
+  const row = ctxTarget(e.target); if (!row || screen !== 'app' || modalKind) return;
+  // while typing in a table cell, the browser's own menu (copy, paste) stays
+  const f = e.target.closest('input, textarea'); if (f && rcTyping) return;
+  if (f && document.activeElement === f) f.blur();
+  if (Date.now() - lastLong < 900) { e.preventDefault(); return; }
+  e.preventDefault();
+  let x = e.clientX, y = e.clientY;
+  if (!x && !y){ const r = row.getBoundingClientRect(); x = rtl() ? r.right - 12 : r.left + 12; y = r.top + Math.min(r.height, 28); } // keyboard (menu key / Shift+F10)
+  openCtx(get(row.dataset.id), x, y, row);
+});
+// touch: press and hold a row for the same menu (cards keep press-and-hold for dragging)
+let longT = 0, longAt = null, lastLong = 0;
+document.addEventListener('pointerdown', e=>{
+  if (e.pointerType !== 'touch') return;
+  const row = e.target.closest('#listview tbody tr[data-id], #sheetview tbody tr[data-id]'); if (!row) return;
+  longAt = {x:e.clientX, y:e.clientY, row};
+  clearTimeout(longT); longT = setTimeout(()=>{ if (!longAt) return; lastLong = Date.now(); navigator.vibrate?.(10); openCtx(get(row.dataset.id), longAt.x, longAt.y, row); longAt = null; }, 520);
+}, {passive:true});
+document.addEventListener('pointermove', e=>{ if (longAt && Math.hypot(e.clientX - longAt.x, e.clientY - longAt.y) > 8){ clearTimeout(longT); longAt = null; } }, {passive:true});
+['pointerup','pointercancel'].forEach(ev=>document.addEventListener(ev, ()=>{ clearTimeout(longT); longAt = null; }, {passive:true}));
+// after a long press, the finger lifting must not also open the task or focus a cell
+document.addEventListener('touchend', e=>{ if (Date.now() - lastLong < 700) e.preventDefault(); }, {passive:false});
+document.addEventListener('click', e=>{ if (Date.now() - lastLong < 700 && !pop.contains(e.target)){ e.preventDefault(); e.stopPropagation(); } }, true);
+function duplicateIssue(i){
+  const c = createIssue({title:t('ctx.dupTitle', {title:i.title || t('issue.untitled')}).slice(0, 500), boardId:i.boardId, status:i.status, type:i.type, priority:i.priority, desc:i.desc,
+    labels:[...i.labels], subtasks:i.subtasks.map(x=>({id:uid(), text:x.text, done:false})), links:i.links.map(l=>({...l, id:uid()})), color:i.color, start:i.start, due:i.due, points:i.points});
+  toast(t('ctx.duped', {key:key(c)}), {action:t('btn.view'), fn:()=>openIssue(c.id)});
+}
+
 function wsMenu(){
   const owned = (wsList||[]).some(w=>w.ownerUid===user.uid);
   return `<div class="menu-h">${esc(t('ws.your'))}</div>${(wsList||[]).map(w=>{
@@ -3170,13 +3298,21 @@ document.addEventListener('click', async e=>{
     case 's-cols': openPop(b, sheetColsMenu(), 'scols'); break;
     case 's-col': { const k = b.dataset.k; if (k === 'title') break; setSheetHidden(k, !sheetHidden().has(k)); sheetColsRefresh(); break; }
     case 's-colsall': P.sheetHide = []; savePrefs(); sheetColsRefresh(); break;
+    case 's-colmv': { const k = b.dataset.k, rest = sheetAllCols().slice(SHEET_PINNED.length); moveSheetCol(k, rest.indexOf(k) + Number(b.dataset.d)); sheetColsRefresh();
+      // keep the focus on the same arrow so it can be pressed again
+      $(`#pop [data-act="s-colmv"][data-k="${k}"][data-d="${b.dataset.d}"]`)?.focus(); break; }
+    case 's-colsorder': delete P.sheetOrder; savePrefs(); sheetColsRefresh(); break;
     case 's-hidecol': { const k = b.dataset.k; closePop(); setSheetHidden(k, true); render();
       toast(t('sheet.colHidden', {col:t('x.col.' + k)}), {action:t('btn.undo'), fn:()=>{ setSheetHidden(k, false); render(); }}); break; }
     case 's-fclear': { if (b.dataset.k) sheetF[b.dataset.k] = undefined; else sheetF = {}; closePop(); render(); break; }
 
     /* issues */
     case 'add-inline': openComposer(b.dataset.status); break;
-    case 'card-menu': openPop(b, statusMenu(i, true), i.id); break;
+    case 'card-menu': openPop(b, ctxMenu(i), i.id); break;
+    case 'ctx-prio': closePop(); if (i && canEdit()) sheetSet(i, 'prio', b.dataset.p); break;
+    case 'ctx-due': { closePop(); if (!i || !canEdit()) break; const d = isISO(b.dataset.d) ? b.dataset.d : ''; if (d === i.due) break;
+      i.due = d; touch(i, d ? t('h.due', {date:fmtDay(d)}) : t('h.dueNone')); save(); render(); break; }
+    case 'dup-issue': closePop(); if (i && canEdit()) duplicateIssue(i); break;
     case 'status-menu': openPop(b, statusMenu(i, false), i.id); break;
     case 's-menu': if (i) openPop(b, sheetMenu(i, b.dataset.sf), i.id); break;
     case 'cal-ics': openIcsExport(); break;
