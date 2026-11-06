@@ -1,5 +1,5 @@
 // Keeps the app itself available offline. Data offline is handled by Firestore's own cache.
-const CACHE = 'workbench-v21';
+const CACHE = 'workbench-v22';
 const CORE = ['./', 'index.html', 'boot.js', 'styles.css', 'app.js', 'store.js', 'i18n.js', 'firebase-config.js', 'manifest.webmanifest',
   'xlsx.js', 'tracker.js', 'icons/icon-192.png', 'assets/mccann-valley.png', 'fonts/rubik-hebrew-400-normal.woff2', 'fonts/rubik-latin-400-normal.woff2', 'vendor/firebase/firebase-app.js', 'vendor/firebase/firebase-auth.js', 'vendor/firebase/firebase-firestore.js'];
 self.addEventListener('install', e=>{ e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)).then(()=>self.skipWaiting())); });

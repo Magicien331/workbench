@@ -147,6 +147,7 @@ const ic = d=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`
 const I = {
   search:ic('<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>'),
   plus:ic('<path d="M12 5v14M5 12h14"/>'),
+  grip:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
   x:ic('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>'),
   more:ic('<circle cx="5.5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.7" fill="currentColor" stroke="none"/>'),
   check:ic('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
@@ -1433,7 +1434,8 @@ let calAnchor = null, calSel = null, calDrag = null, calSuppress = false, calCap
 const isoOf = d=>iso(d);
 const addD = (isoStr, n)=>{ const d = new Date(isoStr+'T12:00'); d.setDate(d.getDate()+n); return iso(d); };
 function calRange(){
-  const mode = P.calMode === 'week' ? 'week' : 'month', a = new Date((calAnchor || today())+'T12:00');
+  const mode = ['week','day'].includes(P.calMode) ? P.calMode : 'month', a = new Date((calAnchor || today())+'T12:00');
+  if (mode === 'day') return {mode, start:iso(a), days:1, month:a.getMonth()};
   if (mode === 'week'){ const st = new Date(a); st.setDate(a.getDate() - a.getDay()); return {mode, start:iso(st), days:7, month:a.getMonth()}; }
   const first = new Date(a.getFullYear(), a.getMonth(), 1, 12), st = new Date(first); st.setDate(1 - first.getDay());
   const dim = new Date(a.getFullYear(), a.getMonth()+1, 0).getDate(), weeks = Math.ceil((first.getDay() + dim)/7);
@@ -1441,6 +1443,7 @@ function calRange(){
 }
 function calTitle(r){
   if (r.mode === 'month') return fmtr('my', {month:'long', year:'numeric'}).format(new Date(r.year, r.month, 1, 12));
+  if (r.mode === 'day') return fmtr('dfull', {weekday:'long', day:'numeric', month:'long', year:'numeric'}).format(new Date(r.start+'T12:00'));
   const a = new Date(r.start+'T12:00'), z = new Date(addD(r.start, 6)+'T12:00');
   // a day range like "1–7" stays left-to-right inside Hebrew text (otherwise it shows as "7–1")
   try { return fmtr('range', {day:'numeric', month:'short', year:'numeric'}).formatRange(a, z).replace(/(\d+)\s*([–-])\s*(\d+)/, '\u2066$1$2$3\u2069'); } catch(e){ return fmtDay(r.start) + ' – ' + fmtDay(addD(r.start, 6)); }
@@ -1478,6 +1481,27 @@ function renderCal(){
       <div class="cd-dots" aria-hidden="true">${dots}</div>
     </div>`;
   }).join('');
+  // day view: the week as a strip of days to hop between, then the chosen day's tasks in full
+  const dayRow = (i, showDue)=>{ const c = colOf(i), bd = boardOf(i);
+    return `<button class="cal-chip dayrow${isDone(i)?' done':''}${dueClass(i)==='over'?' over':''}" data-act="open-issue" data-id="${i.id}" style="--cc:${i.color || typeOf(i.type).color}">
+      ${typeIcon(i.type)}<span class="dr-key">${esc(key(i))}</span><span class="cc-t" data-bidi>${esc(i.title || t('issue.untitled'))}</span>
+      <span class="dr-meta">${showDue ? `<span class="dr-due">${I.clock}${esc(fmtDay(i.due))}</span>` : ''}${all && bd ? `<span class="dr-b">${bAv(bd,'xs')}<span data-bidi>${esc(bd.name)}</span></span>` : ''}${prioIcon(i.priority)}${c ? lozC(c) : ''}</span></button>`; };
+  let dayHTML = '';
+  if (r.mode === 'day'){
+    const d = r.start, list = byDay.get(d) || [], w0 = addD(d, -new Date(d+'T12:00').getDay());
+    const strip = Array.from({length:7}, (_, k)=>{ const x = addD(w0, k), n = (byDay.get(x) || []).length, dt = new Date(x+'T12:00');
+      return `<button class="ds-day${x===d?' on':''}${x===tday?' today':''}" data-act="cal-sel" data-day="${x}" aria-pressed="${x===d}" aria-label="${esc(wdl.format(dt))}${n ? ', ' + esc(tn('issues', n)) : ''}"><span class="ds-wd">${esc(wd.format(dt))}</span><b>${dt.getDate()}</b><span class="ds-n">${n || ''}</span></button>`; }).join('');
+    const overdue = d === tday ? pool.filter(i=>i.due && i.due < tday && !isDone(i)).sort((a, z)=>a.due < z.due ? -1 : 1) : [];
+    const openL = list.filter(i=>!isDone(i)), doneL = list.filter(isDone);
+    const sec = (title, l, cls='')=>l.length ? `<div class="dv-sec ${cls}"><div class="dv-h">${esc(title)}<span class="sec-meta">${l.length}</span></div>${l.map(i=>dayRow(i, cls === 'over')).join('')}</div>` : '';
+    dayHTML = `<div class="cal-grid day" role="region" aria-label="${esc(calTitle(r))}"><div class="day-strip">${strip}</div>
+      <div class="cal-day dayview${d===tday?' today':''}${d<tday?' past':''}" data-day="${d}">
+        <div class="dv-top"><span class="dv-sum">${list.length ? esc(tn('issues', list.length)) + (doneL.length ? ' · ' + esc(t('cal.dayDone', {n:doneL.length})) : '') : esc(t('cal.none'))}</span>
+          ${edit ? `<button class="btn sm" data-act="cal-add" data-day="${d}">${I.plus}${esc(t('cal.add'))}</button>` : ''}</div>
+        <div class="dv-list">${sec(t('cal.dayOpen'), openL)}${sec(t('cal.dayDoneH'), doneL, 'done')}${sec(t('cal.dayOver'), overdue, 'over')}
+          ${!list.length && !overdue.length ? `<div class="dv-empty">${I.cal}<span>${esc(t('cal.dayEmpty'))}</span></div>` : ''}</div>
+      </div></div>`;
+  }
   const selList = byDay.get(calSel) || [];
   const dayPanel = `<section class="cal-daylist" aria-live="polite"><div class="cdl-head"><b>${esc(wdl.format(new Date(calSel+'T12:00')))}</b>${edit ? `<button class="btn sm" data-act="cal-add" data-day="${calSel}">${I.plus}${esc(t('cal.add'))}</button>` : ''}</div>
     ${selList.length ? `<div class="cdl-list">${selList.map(i=>calChip(i,'row')).join('')}</div>` : `<p class="muted-p">${esc(t('cal.none'))}</p>`}</section>`;
@@ -1490,12 +1514,12 @@ function renderCal(){
         <button class="btn icon subtle sm cal-prev" data-act="cal-step" data-n="-1" aria-label="${esc(t('cal.prev'))}" title="${esc(t('cal.prev'))}">${I.chev}</button>
         <button class="btn icon subtle sm cal-next" data-act="cal-step" data-n="1" aria-label="${esc(t('cal.next'))}" title="${esc(t('cal.next'))}">${I.chev}</button>
         <h2 class="cal-title">${esc(calTitle(r))}</h2><span class="cal-hint">${I.cal}${esc(t('cal.byDue'))}</span></div>
-      <div class="cal-tools"><div class="seg" role="group"><button data-act="cal-mode" data-m="month" aria-pressed="${r.mode==='month'}">${esc(t('cal.month'))}</button><button data-act="cal-mode" data-m="week" aria-pressed="${r.mode==='week'}">${esc(t('cal.week'))}</button></div>
+      <div class="cal-tools"><div class="seg" role="group"><button data-act="cal-mode" data-m="month" aria-pressed="${r.mode==='month'}">${esc(t('cal.month'))}</button><button data-act="cal-mode" data-m="week" aria-pressed="${r.mode==='week'}">${esc(t('cal.week'))}</button><button data-act="cal-mode" data-m="day" aria-pressed="${r.mode==='day'}">${esc(t('cal.day'))}</button></div>
         <button class="btn sm" data-act="cal-ics" title="${esc(t('cal.icsTip'))}">${I.down}${esc(t('cal.ics'))}</button>
         <button class="btn sm cal-und-btn" data-act="cal-undated" aria-pressed="${!!P.calUndated}">${esc(t('cal.undated'))}<span class="sec-meta">${undated.length}</span></button></div>
     </div>
     <div class="cal-body${P.calUndated ? ' with-und' : ''}">
-      <div class="cal-main"><div class="cal-grid ${r.mode}" role="grid"><div class="cal-wds">${heads}</div><div class="cal-days" style="--weeks:${r.days/7}">${cells}</div></div>${dayPanel}</div>
+      <div class="cal-main">${r.mode === 'day' ? dayHTML : `<div class="cal-grid ${r.mode}" role="grid"><div class="cal-wds">${heads}</div><div class="cal-days" style="--weeks:${r.days/7}">${cells}</div></div>${dayPanel}`}</div>
       ${und}
     </div>`;
   // fit as many tasks per day as the month cells have room for
@@ -1688,7 +1712,30 @@ calview.addEventListener('contextmenu', e=>{ if (e.target.closest('.cal-chip')) 
    cards flow in rows and stretch to fill them, and with only a few charts on screen the charts get taller.
    Archived tasks count for history (completed, on time, speed). */
 const dashview = $('#dashview');
-const DASH_RANGES = [4, 8, 12, 26];
+/* ----- the period the dashboard looks at: this / last / next week or month, or any range ----- */
+const DASH_PERIODS = ['thisWeek','lastWeek','nextWeek','thisMonth','lastMonth','nextMonth'];
+const monthStart = (d, add=0)=>{ const x = new Date(d+'T12:00'); x.setDate(1); x.setMonth(x.getMonth() + add); return iso(x); };
+const monthEnd = d=>{ const x = new Date(d+'T12:00'); x.setMonth(x.getMonth() + 1, 0); return iso(x); };
+function dashRange(){
+  const tday = today(), w0 = weekStart(tday), okCustom = P.dashPeriod === 'custom' && isISO(P.dashFrom) && isISO(P.dashTo) && P.dashFrom <= P.dashTo;
+  const k = okCustom ? 'custom' : DASH_PERIODS.includes(P.dashPeriod) ? P.dashPeriod : 'thisMonth';
+  let from, to;
+  if (k === 'custom'){ from = P.dashFrom; to = P.dashTo; }
+  else if (k === 'thisWeek'){ from = w0; to = isoAdd(w0, 6); }
+  else if (k === 'lastWeek'){ from = isoAdd(w0, -7); to = isoAdd(w0, -1); }
+  else if (k === 'nextWeek'){ from = isoAdd(w0, 7); to = isoAdd(w0, 13); }
+  else { const add = k === 'lastMonth' ? -1 : k === 'nextMonth' ? 1 : 0; from = monthStart(tday, add); to = monthEnd(from); }
+  const days = daysBetween(from, to) + 1;
+  return {k, from, to, days, future:from > tday, past:to < tday};
+}
+// time buckets for the charts: days for up to two months, weeks beyond that
+function dashBuckets(R){
+  const byDay = R.days <= 62, out = [];
+  if (byDay) for (let d = R.from; d <= R.to; d = isoAdd(d, 1)) out.push({start:d, end:d});
+  else for (let d = weekStart(R.from); d <= R.to; d = isoAdd(d, 7)) out.push({start:d < R.from ? R.from : d, end:isoAdd(d, 6) > R.to ? R.to : isoAdd(d, 6)});
+  return {byDay, list:out, idx:day=>out.findIndex(b=>day >= b.start && day <= b.end)};
+}
+const rangeText = (a, z)=>{ try { return fmtr('rng', {day:'numeric', month:'short', year:'numeric'}).formatRange(new Date(a+'T12:00'), new Date(z+'T12:00')).replace(/(\d+)\s*([–-])\s*(\d+)/, '\u2066$1$2$3\u2069'); } catch { return fmtDay(a) + ' – ' + fmtDay(z); } };
 // order = order on screen. kind: 'kpi' (the number tiles), 'half' (a time chart), 'wide' (full row), '' (a regular card)
 const DASH_W = [
   {id:'kpis', kind:'kpi'}, {id:'weekly', kind:'half'}, {id:'backlog', kind:'half'},
@@ -1704,23 +1751,27 @@ const closedAt = i=>i.doneAt || (isDone(i) ? i.updated : null) || (i.archived ? 
 const DROP_NAMES = ['לא בוצע','בוטל','בוטלה','not done','cancelled','canceled',"won't do"];
 const isDropped = i=>{ const c = colOf(i); return !!c && c.cat === 'done' && DROP_NAMES.some(n=>loose(n) === loose(c.name)); };
 const completed = i=>!!i.doneAt && !isDropped(i);
-function dashStats(list, weeks){
-  const tday = today(), from = isoAdd(weekStart(tday), -7*(weeks-1)), live = list.filter(i=>!i.archived);
+function dashStats(list, R){
+  const tday = today(), {from, to} = R, live = list.filter(i=>!i.archived), inR = d=>d >= from && d <= to;
   const open = live.filter(i=>!isDone(i));
-  const doneIn = list.filter(i=>completed(i) && dayOf(i.doneAt) >= from);
-  const prevFrom = isoAdd(from, -7*weeks), prevDone = list.filter(i=>completed(i) && dayOf(i.doneAt) >= prevFrom && dayOf(i.doneAt) < from).length;
-  const dropped = list.filter(i=>i.doneAt && isDropped(i) && dayOf(i.doneAt) >= from).length;
+  const doneIn = list.filter(i=>completed(i) && inR(dayOf(i.doneAt)));
+  // the same length of time just before, for comparison
+  const prevFrom = isoAdd(from, -R.days), prevTo = isoAdd(from, -1), prevDone = list.filter(i=>completed(i) && dayOf(i.doneAt) >= prevFrom && dayOf(i.doneAt) <= prevTo).length;
+  const dropped = list.filter(i=>i.doneAt && isDropped(i) && inR(dayOf(i.doneAt))).length;
+  // planned work: tasks whose due date falls in the period (not the ones closed as not done)
+  const planned = list.filter(i=>i.due && inR(i.due) && !isDropped(i)), plannedDone = planned.filter(completed).length;
   const withDue = doneIn.filter(i=>i.due);
   const onTime = withDue.filter(i=>dayOf(i.doneAt) <= i.due).length;
   const spans = doneIn.map(i=>daysBetween(i.start, dayOf(i.doneAt))).filter(n=>n >= 0);
   return {open, over:open.filter(i=>i.due && i.due < tday), soon:open.filter(i=>i.due && i.due >= tday && i.due <= addDays(7)),
-    doneIn, done:doneIn.length, prevDone, dropped, onTime:withDue.length ? Math.round(onTime / withDue.length * 100) : null, onTimeN:withDue.length,
+    doneIn, done:doneIn.length, prevDone, dropped, planned, plannedDone, plannedPct:planned.length ? Math.round(plannedDone / planned.length * 100) : null, onTime:withDue.length ? Math.round(onTime / withDue.length * 100) : null, onTimeN:withDue.length,
     spans, avg:spans.length ? Math.round(spans.reduce((a, b)=>a + b, 0) / spans.length * 10) / 10 : null,
-    created:list.filter(i=>dayOf(i.created) >= from).length, from};
+    created:list.filter(i=>inR(dayOf(i.created))).length, from, to};
 }
-const dashWeeks = weeks=>Array.from({length:weeks}, (_, k)=>isoAdd(weekStart(today()), -7*(weeks-1-k)));
 // a round top for the y axis, so the middle gridline is a whole number too
 const niceTop = max=>max <= 2 ? 2 : max <= 4 ? 4 : Math.ceil(max / 4) * 4;
+// "previous period: 4 (+50%)" — how this period compares with the same length of time just before it
+const trend = (now, prev)=>prev ? t('dash.vsPrevP', {n:prev, p:(now > prev ? '+' : now < prev ? '−' : '') + Math.round(Math.abs(now - prev) / prev * 100) + '%'}) : t('dash.vsPrev', {n:prev});
 const tile = (label, value, sub, cls='')=>`<div class="kpi ${cls}"><span class="kpi-l">${esc(label)}</span><b class="kpi-v">${value}</b>${sub ? `<span class="kpi-s">${sub}</span>` : ''}</div>`;
 const legend = items=>`<div class="viz-legend">${items.map(([cls, label])=>`<span><i class="sw ${cls}"></i>${esc(label)}</span>`).join('')}</div>`;
 function card(w, title, body, o={}){
@@ -1740,7 +1791,7 @@ function fitX(){
     const wOf = s=>xCtx.measureText(s).width;
     if (xs[0].hasAttribute('data-time')){
       const need = Math.max(...xs.map(x=>wOf(x.dataset.x))) + 10, n = xs.length;
-      const step = [1,2,3,4,6,8,13,26].find(s=>s * colW >= need) || n;
+      const step = [1,2,3,4,5,7,8,13,26].find(s=>s * colW >= need) || n;
       xs.forEach((x, k)=>{ x.textContent = (n - 1 - k) % step === 0 ? x.dataset.x : ''; });
     } else {
       const long = Math.max(...xs.map(x=>wOf(x.dataset.x))) + 6 <= colW;
@@ -1764,32 +1815,38 @@ function colChart(w, title, cols, o={}){
     : `<p class="muted-p">${esc(o.empty)}</p>`;
   return card(w, title, body, {legend:o.legend, meta:o.meta});
 }
-function weekChart(w, list, weeks){
-  const ws = dashWeeks(weeks), idx = d=>ws.indexOf(weekStart(d));
-  const made = ws.map(()=>0), done = ws.map(()=>0);
-  list.forEach(i=>{ const a = idx(dayOf(i.created)); if (a >= 0) made[a]++; if (completed(i)){ const c = idx(dayOf(i.doneAt)); if (c >= 0) done[c]++; } });
-  const top = niceTop(Math.max(1, ...made, ...done));
-  return card(w, t('dash.weekly'), `<div class="wk" style="--n:${weeks}">${yGrid(top)}
-      <div class="wk-cols">${ws.map((d, k)=>`<div class="wk-col" data-tip="${esc(t('dash.weekOf', {date:fmtDay(d)}))} · ${esc(t('dash.created'))}: ${made[k]} · ${esc(t('dash.completed'))}: ${done[k]}">
-        <div class="wk-bars"><span class="b s1" style="height:${made[k] / top * 100}%"></span><span class="b s2" style="height:${done[k] / top * 100}%"></span></div>
-        <span class="wk-x" data-x="${esc(fmtDay(d))}" data-time></span></div>`).join('')}</div>
-    </div>`, {legend:legend([['s1', t('dash.created')], ['s2', t('dash.completed')]])});
+const bucketTip = (B, b)=>B.byDay ? fmtr('wdl', {weekday:'long', day:'numeric', month:'long'}).format(new Date(b.start+'T12:00')) : t('dash.weekOf', {date:fmtDay(b.start)});
+function weekChart(w, list, R){
+  // per day (or week): work that came in against work that got done; for a period still ahead, the work due in it
+  const B = dashBuckets(R), n = B.list.length, A = B.list.map(()=>0), Z = B.list.map(()=>0), ahead = R.future;
+  list.forEach(i=>{
+    if (ahead){ if (i.due && !isDropped(i)){ const k = B.idx(i.due); if (k >= 0) A[k]++; } return; }
+    const a = B.idx(dayOf(i.created)); if (a >= 0) A[a]++;
+    if (completed(i)){ const c = B.idx(dayOf(i.doneAt)); if (c >= 0) Z[c]++; } });
+  const top = niceTop(Math.max(1, ...A, ...Z)), s1 = ahead ? t('dash.dueIn') : t('dash.created');
+  return card(w, ahead ? t('dash.plannedChart') : t(B.byDay ? 'dash.daily' : 'dash.weekly'), `<div class="wk${ahead ? ' one' : ''}" style="--n:${n}">${yGrid(top)}
+      <div class="wk-cols">${B.list.map((b, k)=>`<div class="wk-col${b.start === today() ? ' now' : ''}" data-tip="${esc(bucketTip(B, b))} · ${esc(s1)}: ${A[k]}${ahead ? '' : ` · ${esc(t('dash.completed'))}: ${Z[k]}`}">
+        <div class="wk-bars"><span class="b s1" style="height:${A[k] / top * 100}%"></span>${ahead ? '' : `<span class="b s2" style="height:${Z[k] / top * 100}%"></span>`}</div>
+        <span class="wk-x" data-x="${esc(B.byDay && R.days <= 7 ? (fmtr('wd', {weekday:'short'}).format(new Date(b.start+'T12:00')).replace(/^יום\s+/, '') + ' ' + Number(b.start.slice(8))) : fmtDay(b.start))}" data-time></span></div>`).join('')}</div>
+    </div>`, {legend:legend(ahead ? [['s1', s1]] : [['s1', s1], ['s2', t('dash.completed')]])});
 }
 // how many tasks were open (and how many of those overdue) at the end of each week — is the pile growing?
-function backlogChart(w, list, weeks){
-  const ws = dashWeeks(weeks), now = Date.now(), tday = today();
-  const pts = ws.map(d=>{
-    const endDay = isoAdd(d, 6), T = endDay >= tday ? now : new Date(endDay+'T23:59:59').getTime(), dayT = endDay >= tday ? tday : endDay;
+function backlogChart(w, list, R){
+  // open (and overdue) at the end of each day or week, up to today; a period still ahead has nothing to show yet
+  const B = dashBuckets(R), now = Date.now(), tday = today();
+  if (R.future) return card(w, t('dash.backlog'), `<p class="muted-p">${esc(t('dash.notYet'))}</p>`);
+  const pts = B.list.filter(b=>b.start <= tday).map(b=>{
+    const endDay = b.end, T = endDay >= tday ? now : new Date(endDay+'T23:59:59').getTime(), dayT = endDay >= tday ? tday : endDay;
     let open = 0, over = 0;
     list.forEach(i=>{ if (i.created > T) return; const c = closedAt(i); if (c && c <= T) return; open++; if (i.due && i.due < dayT) over++; });
-    return {d, open, over};
+    return {d:b.start, e:b.end, open, over, now:endDay >= tday};
   });
-  const top = niceTop(Math.max(1, ...pts.map(p=>p.open))), n = ws.length, r = rtl();
+  const top = niceTop(Math.max(1, ...pts.map(p=>p.open))), n = pts.length, r = rtl();
   const x = k=>{ const v = (k + .5) / n * 100; return (r ? 100 - v : v).toFixed(2); };
   const line = key=>pts.map((p, k)=>`${x(k)},${(100 - p[key] / top * 100).toFixed(2)}`).join(' ');
   return card(w, t('dash.backlog'), `<div class="wk ln" style="--n:${n}">${yGrid(top)}
       <svg class="ln-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline class="ln s1" points="${line('open')}" vector-effect="non-scaling-stroke"/><polyline class="ln s2" points="${line('over')}" vector-effect="non-scaling-stroke"/></svg>
-      <div class="wk-cols">${pts.map((p, k)=>`<div class="wk-col" data-tip="${esc(k === n - 1 ? t('dash.now') : t('dash.endOf', {date:fmtDay(isoAdd(p.d, 6))}))} · ${esc(t('dash.open'))}: ${p.open} · ${esc(t('dash.over'))}: ${p.over}">
+      <div class="wk-cols">${pts.map((p, k)=>`<div class="wk-col" data-tip="${esc(p.now ? t('dash.now') : B.byDay ? bucketTip(B, {start:p.d}) : t('dash.endOf', {date:fmtDay(p.e)}))} · ${esc(t('dash.open'))}: ${p.open} · ${esc(t('dash.over'))}: ${p.over}">
         <div class="ln-area"><span class="pt s1" style="bottom:${p.open / top * 100}%"></span><span class="pt s2" style="bottom:${p.over / top * 100}%"></span></div>
         <span class="wk-x" data-x="${esc(fmtDay(p.d))}" data-time></span></div>`).join('')}</div>
     </div>`, {legend:legend([['s1', t('dash.open')], ['s2', t('dash.over')]])});
@@ -1811,6 +1868,14 @@ function dashCustomMenu(){
       return `<button class="menu-i" role="menuitemcheckbox" aria-checked="${on}" data-act="dash-toggle" data-w="${w.id}"${off ? ' aria-describedby="dash-allnote"' : ''}><span class="sf-box${on ? ' on' : ''}">${on ? I.check : ''}</span><span class="sf-l">${esc(t('dash.w.' + w.id))}${off ? `<small class="dash-only">${esc(t('dash.allOnly'))}</small>` : ''}</span></button>`; }).join('')}</div>
     <div class="menu-sep"></div><div class="dash-pick-f"><button class="link-btn" data-act="dash-showall">${esc(t('dash.showAll'))}</button><button class="link-btn" data-act="dash-hideall">${esc(t('dash.hideAll'))}</button></div>`;
 }
+function dashPeriodMenu(){
+  const RG = dashRange(), item = k=>`<button class="menu-i" role="menuitemradio" aria-checked="${RG.k === k}" data-act="dash-per" data-k="${k}"><span class="sf-box round${RG.k === k ? ' on' : ''}">${RG.k === k ? I.check : ''}</span><span class="sf-l">${esc(t('dash.p.' + k))}</span></button>`;
+  return `<div class="menu-h">${esc(t('dash.range'))}</div><div class="per-cols"><div>${['thisWeek','lastWeek','nextWeek'].map(item).join('')}</div><div>${['thisMonth','lastMonth','nextMonth'].map(item).join('')}</div></div>
+    <div class="menu-sep"></div><div class="per-custom"><div class="menu-h">${esc(t('dash.p.custom'))}</div>
+      <div class="per-f"><label>${esc(t('dash.p.from'))}<input type="date" id="dpFrom" value="${RG.from}"></label><label>${esc(t('dash.p.to'))}<input type="date" id="dpTo" value="${RG.to}"></label></div>
+      <p class="per-err" id="dpErr" hidden>${esc(t('dash.p.bad'))}</p>
+      <button class="btn primary sm" data-act="dash-per-apply">${esc(t('dash.p.apply'))}</button></div>`;
+}
 function dashRefresh(){
   renderDash();
   const btn = $('[data-act="dash-custom"]', dashview);
@@ -1819,20 +1884,21 @@ function dashRefresh(){
 function renderDash(){
   const all = isAll(), b = curBoard();
   if (!b){ dashview.innerHTML = `<div class="empty-state"><b>${esc(t('empty.noBoards'))}</b></div>`; return; }
-  const weeks = DASH_RANGES.includes(P.dashWeeks) ? P.dashWeeks : 8, hid = dashHidden();
-  const W = DASH_W.filter(w=>!hid.has(w.id) && (!w.all || all)), on = new Set(W.map(w=>w.id));
+  const RG = dashRange(), hid = dashHidden();
+  // a period still ahead has no history yet, so the open-over-time line is left out
+  const W = DASH_W.filter(w=>!hid.has(w.id) && (!w.all || all) && !(RG.future && w.id === 'backlog')), on = new Set(W.map(w=>w.id));
   const list = S.issues.filter(i=>(all || i.boardId === b.id) && boardOf(i)).filter(matches);
-  const st = dashStats(list, weeks);
+  const st = dashStats(list, RG);
   const byDue = (a, c)=>(a.due || '').localeCompare(c.due || '');
   const count = (arr, key)=>{ const m = new Map(); arr.forEach(i=>{ const k = key(i); m.set(k, (m.get(k) || 0) + 1); }); return m; };
   const boards = ()=>S.boards.slice().sort((a, c)=>(a.order ?? 0) - (c.order ?? 0));
   const tday = today(), wk0 = weekStart(tday);
   const make = {
-    weekly:w=>weekChart(w, list, weeks),
-    backlog:w=>backlogChart(w, list, weeks),
+    weekly:w=>weekChart(w, list, RG),
+    backlog:w=>backlogChart(w, list, RG),
     clients:w=>clientsChart(w, boards().map(x=>{ const o = st.open.filter(i=>i.boardId === x.id); return {b:x, open:o.length, over:o.filter(i=>i.due && i.due < tday).length}; }).sort((a, c)=>c.open - a.open)),
     compare:w=>{
-      const rows = boards().map(x=>({b:x, s:dashStats(list.filter(i=>i.boardId === x.id), weeks)}));
+      const rows = boards().map(x=>({b:x, s:dashStats(list.filter(i=>i.boardId === x.id), RG)}));
       const maxOpen = Math.max(1, ...rows.map(r=>r.s.open.length));
       return card(w, t('dash.compare'), `<div class="cmp-wrap"><table class="cmp">
         <thead><tr><th>${esc(t('x.col.board'))}</th><th>${esc(t('dash.open'))}</th><th>${esc(t('dash.over'))}</th><th>${esc(t('dash.soon'))}</th><th>${esc(t('dash.done'))}</th><th>${esc(t('dash.onTime'))}</th><th>${esc(t('dash.avg'))}</th></tr></thead>
@@ -1872,7 +1938,7 @@ function renderDash(){
     prio:w=>{ const by = count(st.open, i=>i.priority);
       return hbars(w, PRIOS.map(p=>({label:prioName(p), n:by.get(p) || 0, ico:prioIcon(p)})).filter(r=>r.n), t('dash.byPrio'), t('dash.noOpen')); },
   };
-  const rangeSel = `<div class="seg" role="group" aria-label="${esc(t('dash.range'))}">${DASH_RANGES.map(w=>`<button data-act="dash-range" data-w="${w}" aria-pressed="${w === weeks}">${esc(tn('dash.weeks', w))}</button>`).join('')}</div>`;
+  const rangeSel = `<button class="btn subtle sm dash-per" data-act="dash-period" aria-haspopup="true" aria-expanded="false" aria-label="${esc(t('dash.range'))}: ${esc(t('dash.p.' + RG.k))}">${I.cal}<span>${esc(t('dash.p.' + RG.k))}</span>${I.chev}</button>`;
   const shownN = W.length, hiddenN = DASH_W.filter(w=>!w.all || all).length - shownN;
   const custom = `<button class="btn subtle sm dash-cust" data-act="dash-custom" aria-haspopup="true" aria-expanded="false">${I.sliders}<span>${esc(t('dash.custom'))}</span>${hiddenN ? `<span class="dash-hid">${esc(tn('dash.hiddenN', hiddenN))}</span>` : ''}</button>`;
   const charts = W.filter(w=>w.kind !== 'kpi');
@@ -1880,15 +1946,15 @@ function renderDash(){
   const size = charts.length <= 2 ? 'roomy' : charts.length <= 5 ? 'mid' : '';
   dashview.className = 'dashview' + (size ? ' ' + size : '');
   const filt = filtering() ? `<span class="dash-filt">${I.funnel}${esc(t('dash.filtered'))}<button class="link-btn" data-act="clear-filters">${esc(t('qf.clear'))}</button></span>` : '';
-  dashview.innerHTML = `<div class="dash-bar"><span class="dash-scope">${esc(t('dash.period', {date:fmtDay(st.from)}))} · ${esc(tn('dash.createdN', st.created))}</span>${filt}<div class="dash-ctl">${custom}${rangeSel}</div></div>
-    ${on.has('kpis') ? `<div class="kpis">
-      ${tile(t('dash.open'), st.open.length)}
-      ${tile(t('dash.over'), st.over.length, st.over.length ? esc(t('dash.overSub')) : '', st.over.length ? 'bad' : '')}
-      ${tile(t('dash.soon'), st.soon.length)}
-      ${tile(t('dash.done'), st.done, [st.prevDone || st.done ? esc(t('dash.vsPrev', {n:st.prevDone})) : '', st.dropped ? esc(tn('dash.droppedN', st.dropped)) : ''].filter(Boolean).join(' · ') || esc(tn('dash.createdN', st.created)))}
-      ${tile(t('dash.onTime'), st.onTime == null ? '—' : st.onTime + '%', st.onTimeN ? esc(tn('dash.ofDue', st.onTimeN)) : esc(t('dash.noDue')))}
-      ${tile(t('dash.avg'), st.avg == null ? '—' : esc(String(st.avg)), st.avg == null ? '' : esc(t('dash.daysUnit')))}
-    </div>` : ''}
+  dashview.innerHTML = `<div class="dash-bar"><span class="dash-scope"><b>${esc(rangeText(RG.from, RG.to))}</b> · ${esc(tn('dash.days', RG.days))}</span>${filt}<div class="dash-ctl">${custom}${rangeSel}</div></div>
+    ${on.has('kpis') ? `<div class="kpi-wrap"><div class="kpis">
+      ${tile(t('dash.planned'), st.planned.length, st.planned.length ? (RG.future ? esc(t('dash.plannedAhead')) : `<span class="kpi-bar" style="--p:${st.plannedPct}%"></span>${esc(t('dash.plannedDone', {n:st.plannedDone, p:st.plannedPct}))}`) : esc(t('dash.noPlanned')))}
+      ${tile(t('dash.done'), st.done, RG.future ? esc(t('dash.notYet')) : [esc(trend(st.done, st.prevDone)), st.dropped ? esc(tn('dash.droppedN', st.dropped)) : ''].filter(Boolean).join(' · '), RG.future ? 'dim' : '')}
+      ${tile(t('dash.newIn'), st.created, RG.future || !(st.created || st.done) ? '' : esc(st.created > st.done ? t('dash.growing') : st.created < st.done ? t('dash.shrinking') : t('dash.steady')))}
+      ${tile(t('dash.onTime'), st.onTime == null ? '—' : st.onTime + '%', st.onTimeN ? esc(tn('dash.ofDue', st.onTimeN)) : esc(t('dash.noDue')), st.onTime == null ? 'dim' : st.onTime >= 80 ? 'good' : st.onTime < 50 ? 'bad' : '')}
+      ${tile(t('dash.openNow'), st.open.length, [st.over.length ? esc(tn('dash.overN', st.over.length)) : '', st.soon.length ? esc(tn('dash.soonN', st.soon.length)) : ''].filter(Boolean).join(' · ') || esc(t('dash.allOnTrack')), st.over.length ? 'bad' : '')}
+      ${tile(t('dash.avg'), st.avg == null ? '—' : esc(String(st.avg)), st.avg == null ? '' : esc(t('dash.daysUnit')), st.avg == null ? 'dim' : '')}
+    </div></div>` : ''}
     ${charts.length ? `<div class="viz-grid" data-n="${charts.length}">${charts.map(w=>make[w.id](w.kind === 'half' && !(on.has('weekly') && on.has('backlog')) ? {...w, kind:'wide'} : w)).join('')}</div>`
       : !on.has('kpis') ? `<div class="empty-state dash-none"><b>${esc(t('dash.allHidden'))}</b><button class="btn primary" data-act="dash-showall">${esc(t('dash.showAll'))}</button></div>` : ''}`;
   fitX();
@@ -2282,7 +2348,7 @@ function peopleMenuRefresh(){
 function peopleField(i, edit){
   const ps = peopleOf(i), c = creatorOf(i), ck = pKey(c);
   return `<div class="pp-list">${ps.map(p=>{ const k = pKey(p), isC = k === ck;
-      return `<span class="pp-chip${isC ? ' creator' : ''}" title="${esc(p.email || pName(p))}">${avatar(p, 'xs')}<span class="pp-n" data-bidi>${esc(pName(p))}</span>${isC ? `<small>${esc(t('pp.creator'))}</small>` : ''}${edit && !isC ? `<button class="pp-x" data-act="with-del" data-k="${esc(k)}" aria-label="${esc(t('pp.remove', {name:pName(p)}))}" title="${esc(t('pp.remove', {name:pName(p)}))}">${I.x}</button>` : ''}</span>`; }).join('') || `<span class="t-muted">${esc(t('none'))}</span>`}
+      return `<span class="pp-chip${isC ? ' creator' : ''}" title="${esc(pName(p) + (p.email && p.email !== pName(p) ? ' · ' + p.email : ''))}">${avatar(p, 'xs')}<span class="pp-n" data-bidi>${esc(pName(p))}</span>${isC ? `<small>${esc(t('pp.creator'))}</small>` : ''}${edit && !isC ? `<button class="pp-x" data-act="with-del" data-k="${esc(k)}" aria-label="${esc(t('pp.remove', {name:pName(p)}))}" title="${esc(t('pp.remove', {name:pName(p)}))}">${I.x}</button>` : ''}</span>`; }).join('') || `<span class="t-muted">${esc(t('none'))}</span>`}
     ${edit ? `<button class="btn subtle sm pp-add" data-act="with-menu" aria-haspopup="menu">${I.plus}${esc(t('pp.add'))}</button>` : ''}</div>`;
 }
 function withMenuHTML(i){
@@ -2320,9 +2386,12 @@ function relResults(i){
   const pool = S.issues.filter(o=>o.id !== i.id && !have.has(o.id));
   const hit = q ? pool.filter(o=>(key(o) + ' ' + o.title + ' ' + boardOf(o).name).toLowerCase().includes(q)) : pool;
   // same board and recent first when nothing is typed
-  hit.sort((a, b)=>(a.archived - b.archived) || ((b.boardId === i.boardId) - (a.boardId === i.boardId)) || (isDone(a) - isDone(b)) || b.updated - a.updated);
-  return hit.slice(0, 8).map(o=>`<li><button class="rel-hit" role="option" data-act="rel-add" data-rid="${o.id}">${typeIcon(o.type)}<span class="rel-key">${esc(key(o))}</span><span class="rel-t" data-bidi>${esc(o.title || t('issue.untitled'))}</span><span class="loz st ${colOf(o).cat}" data-bidi>${esc(colOf(o).name)}</span></button></li>`).join('')
-    || `<li class="muted-p">${esc(t('rel.noHits'))}</li>`;
+  hit.sort((a, b)=>((b.boardId === i.boardId) - (a.boardId === i.boardId)) || (isDone(a) - isDone(b)) || b.updated - a.updated);
+  const row = o=>`<li><button class="rel-hit${o.archived ? ' arch' : ''}" role="option" data-act="rel-add" data-rid="${o.id}">${typeIcon(o.type)}<span class="rel-key">${esc(key(o))}</span><span class="rel-t" data-bidi>${esc(o.title || t('issue.untitled'))}</span><span class="loz st ${o.archived ? '' : colOf(o).cat}" data-bidi>${esc(o.archived ? t('issue.archived') : colOf(o).name)}</span></button></li>`;
+  // archived tasks get their own group under the live ones
+  const live = hit.filter(o=>!o.archived).slice(0, 8), arch = hit.filter(o=>o.archived).slice(0, q ? 5 : 3);
+  if (!live.length && !arch.length) return `<li class="muted-p">${esc(t('rel.noHits'))}</li>`;
+  return live.map(row).join('') + (arch.length ? `<li class="rel-gh" role="presentation">${I.archive}${esc(t('rel.archived'))}</li>` + arch.map(row).join('') : '');
 }
 function statusMenu(i, withExtras){
   const b = boardOf(i), edit = canEdit();
@@ -2750,7 +2819,7 @@ function colRowHTML(c, ix){
   }
   const last = d.columns.length - 1;
   return `<li class="ed-row" data-cid="${c.id}">
-    <span class="ed-pos">${ix+1}</span>
+    ${d.columns.length > 1 ? `<span class="ed-grip" title="${esc(t('bs.dragCol'))}" aria-hidden="true">${I.grip}</span>` : ''}<span class="ed-pos">${ix+1}</span>
     <input class="inp ce-name" data-k="cname-${c.id}" value="${esc(c.name)}" data-bidi placeholder="${esc(t('bs.colName'))}" aria-label="${esc(t('bs.colName'))}" autocomplete="off">
     <select class="inp" data-k="ccat-${c.id}" aria-label="${esc(t('bs.category'))}">${CATS.map(k=>`<option value="${k}"${k===c.cat?' selected':''}>${esc(catName(k))}</option>`).join('')}</select>
     <span class="loz ${c.cat}" data-loz>${esc(catName(c.cat))}</span>
@@ -2770,6 +2839,42 @@ function rerenderCols(animate){
       if (Math.abs(dy) > .5) r.animate([{transform:`translateY(${dy}px)`},{transform:'none'}],{duration:200, easing:'cubic-bezier(.2,.8,.2,1)'}); });
   } else doIt();
 }
+/* drag a status column by its handle to put it somewhere else in the order (the ↑ ↓ buttons still work too) */
+let edDrag = null;
+layer.addEventListener('pointerdown', e=>{
+  const g = e.target.closest('#colList .ed-grip'); if (!g || e.button) return;
+  const row = g.closest('.ed-row'), list = row.parentElement; e.preventDefault();
+  edDrag = {row, list, y0:e.clientY, top0:row.getBoundingClientRect().top, pid:e.pointerId, order:[...list.children].map(r=>r.dataset.cid).join()};
+  try { g.setPointerCapture(e.pointerId); } catch(_){}
+  row.classList.add('lift'); list.classList.add('sorting');
+});
+layer.addEventListener('pointermove', e=>{
+  const d = edDrag; if (!d || e.pointerId !== d.pid) return;
+  const others = [...d.list.children].filter(r=>r !== d.row);
+  let before = null;
+  for (const r of others){ const b = r.getBoundingClientRect(); if (e.clientY < b.top + b.height / 2){ before = r; break; } }
+  if (d.row.nextElementSibling !== before){
+    const pos = new Map(others.map(r=>[r, r.getBoundingClientRect().top]));
+    d.list.insertBefore(d.row, before);
+    if (!reduce) others.forEach(r=>{ const dy = pos.get(r) - r.getBoundingClientRect().top; if (Math.abs(dy) > .5) r.animate([{transform:`translateY(${dy}px)`}, {transform:'none'}], {duration:160, easing:'cubic-bezier(.2,.8,.2,1)'}); });
+  }
+  d.row.style.transform = '';
+  const slot = d.row.getBoundingClientRect().top;
+  d.row.style.transform = `translateY(${d.top0 + e.clientY - d.y0 - slot}px)`;
+});
+function edDragEnd(){
+  const d = edDrag; if (!d) return; edDrag = null;
+  d.row.classList.remove('lift'); d.list.classList.remove('sorting');
+  const ids = [...d.list.children].map(r=>r.dataset.cid);
+  const settle = ()=>{ d.row.style.transform = ''; };
+  if (!reduce && d.row.style.transform){ const a = d.row.animate([{transform:d.row.style.transform}, {transform:'none'}], {duration:140, easing:'ease-out'}); settle(); a.onfinish = ()=>{}; } else settle();
+  if (ids.join() === d.order) return;
+  const byId = new Map(bDraft.columns.map(c=>[c.id, c]));
+  bDraft.columns = ids.map(id=>byId.get(id)).filter(Boolean).concat(bDraft.columns.filter(c=>!ids.includes(c.id)));
+  rerenderCols(false);
+}
+layer.addEventListener('pointerup', edDragEnd);
+layer.addEventListener('pointercancel', edDragEnd);
 function saveBoard(){
   const d = bDraft; d.err = {};
   d.name = d.name.trim(); d.key = d.key.trim().toUpperCase();
@@ -2952,7 +3057,7 @@ async function sendRequest(form){
 
 /* ----- Shortcuts ----- */
 function openShortcuts(){
-  const k = [['C','sc.create'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['T','sc.table'],['K','sc.cal'],['D','sc.dash'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
+  const k = [['C','sc.create'],['Ctrl + K','sc.gsearch'],['/','sc.search'],['B','sc.board'],['L','sc.list'],['T','sc.table'],['K','sc.cal'],['D','sc.dash'],['A','sc.all'],['Enter','sc.open'],['Shift + ← →','sc.move'],['↑ ↓','sc.nav'],['Ctrl + Enter','sc.comment'],['Esc','sc.close'],['?','sc.help']];
   showModal(`${head(t('sc.title'))}<dl class="kbd-list">${k.map(([a,b])=>`<dt dir="ltr">${a.split(' ').map(x=>x==='+'?' + ':`<kbd>${x}</kbd>`).join('')}</dt><dd>${esc(t(b))}</dd>`).join('')}</dl>`, 'help', 'tiny');
 }
 
@@ -3328,19 +3433,30 @@ document.addEventListener('click', async e=>{
       icsSave({at:0, n:0, files:0, tasks:{}, opts:old?.opts || {}});
       toast(t('ics.forgot'), {action:t('btn.undo'), fn:async()=>{ await icsSave(old); if (icsDlg){ icsDlg.mem = old; icsRefresh(); } }}); break; }
     case 'ics-go': icsExportNow(); break;
-    case 'dash-range': P.dashWeeks = Number(b.dataset.w) || 8; savePrefs(); renderDash(); break;
+    case 'dash-period': openPop(b, dashPeriodMenu(), 'dashper'); break;
+    case 'dash-per': P.dashPeriod = b.dataset.k; savePrefs(); closePop(); renderDash(); break;
+    case 'dash-per-apply': { const a = $('#dpFrom', pop)?.value, z = $('#dpTo', pop)?.value;
+      if (!isISO(a) || !isISO(z) || a > z || daysBetween(a, z) > 731){ $('#dpErr', pop).hidden = false; break; }
+      P.dashPeriod = 'custom'; P.dashFrom = a; P.dashTo = z; savePrefs(); closePop(); renderDash(); break; }
     case 'dash-custom': openPop(b, dashCustomMenu(), 'dash'); break;
     case 'dash-toggle': case 'dash-hide': { const h = dashHidden(), w = b.dataset.w; h.has(w) && act === 'dash-toggle' ? h.delete(w) : h.add(w); P.dashHide = [...h]; savePrefs(); dashRefresh();
       if (act === 'dash-hide') toast(t('dash.hidden', {name:t('dash.w.' + w)}), {action:t('btn.undo'), fn:()=>{ const x = dashHidden(); x.delete(w); P.dashHide = [...x]; savePrefs(); renderDash(); }}); break; }
     case 'dash-showall': P.dashHide = []; savePrefs(); dashRefresh(); break;
     case 'dash-hideall': P.dashHide = DASH_W.map(w=>w.id); savePrefs(); dashRefresh(); break;
+    case 'gs-open': gsFocus(); break;
+    case 'gs-go': gsGo(b.dataset.id); break;
+    case 'gs-more': { const sc = gres.scrollTop; gsAll.add(b.dataset.g); gsRender(); gres.scrollTop = sc; gq.focus(); break; }
     case 'cal-today': calAnchor = today(); calSel = today(); renderCal(); break;
     case 'cal-step': { const r = calRange(), n = Number(b.dataset.n) || 0, a = new Date((calAnchor || today())+'T12:00');
-      if (r.mode === 'week') a.setDate(a.getDate() + 7*n); else { a.setDate(1); a.setMonth(a.getMonth() + n); }
-      calAnchor = iso(a); calSel = null; renderCal(); break; }
-    case 'cal-mode': P.calMode = b.dataset.m === 'week' ? 'week' : 'month'; calAnchor = calSel || calAnchor; savePrefs(); renderCal(); break;
+      if (r.mode === 'day') a.setDate(a.getDate() + n); else if (r.mode === 'week') a.setDate(a.getDate() + 7*n); else { a.setDate(1); a.setMonth(a.getMonth() + n); }
+      calAnchor = iso(a); calSel = r.mode === 'day' ? calAnchor : null; renderCal(); break; }
+    case 'cal-mode': P.calMode = ['week','day'].includes(b.dataset.m) ? b.dataset.m : 'month'; calAnchor = calSel || calAnchor; savePrefs(); renderCal(); break;
     case 'cal-undated': P.calUndated = !P.calUndated; savePrefs(); renderCal(); break;
-    case 'cal-sel': calSel = b.dataset.day; if (P.calMode === 'week' || !isMobile()) { if (!isMobile()){ calAnchor = calSel; P.calMode = 'week'; savePrefs(); } } renderCal(); break;
+    case 'cal-sel': calSel = b.dataset.day;
+      if (P.calMode === 'day'){ calAnchor = calSel; }
+      else if (P.calMode === 'week'){ calAnchor = calSel; P.calMode = 'day'; savePrefs(); }
+      else if (!isMobile()){ calAnchor = calSel; P.calMode = 'week'; savePrefs(); }
+      renderCal(); break;
     case 'cal-add': openCreate(null, {due:b.dataset.day}); break;
     case 'cal-day': { const d = b.dataset.day, list = scopeIssues().filter(matches).filter(x=>x.due===d).sort(calSort);
       openPop(b, `<div class="menu-h">${esc(fmtr('wdl', {weekday:'long', day:'numeric', month:'long'}).format(new Date(d+'T12:00')))}</div><div class="cal-pop">${list.map(x=>calChip(x,'row')).join('')}</div>`, ''); break; }
@@ -3515,6 +3631,96 @@ document.addEventListener('keydown', e=>{
 });
 // debounced: with hundreds of tasks a render on every keystroke made typing lag on phones
 $('#q').addEventListener('input', e=>{ query = e.target.value; clearTimeout(qTimer); qTimer = setTimeout(render, query ? 140 : 0); });
+
+/* double-click on an empty spot closes the side panel, if it is open */
+const DBL_SKIP = 'button,a,input,textarea,select,label,option,[contenteditable],[data-act],[role="button"],.card,tr,.cal-chip,.cal-day,.ds-day,.viz-card,.kpi,.side,#pop,#layer,.gsearch,.toast,.col-head,.ed-row';
+document.addEventListener('dblclick', e=>{
+  if (screen !== 'app' || modalKind || drag?.active || calDrag) return;
+  if (e.target.closest?.(DBL_SKIP)) return;
+  if (String(getSelection?.() || '').trim()) return; // a word was double-clicked to select it, not empty space
+  if (sideOverlay()){ if (shell.classList.contains('side-open')) shell.classList.remove('side-open'); return; }
+  if (P.side){ P.side = false; shell.classList.add('side-closed'); savePrefs(); }
+});
+
+/* ================= Search across every task (top bar) =================
+   Looks through all the boards at once — title, key, description, labels, checklist, comments — and
+   lists live tasks first, archived ones in their own group below. Ctrl/⌘+K jumps here from anywhere. */
+const gq = $('#gq'), gres = $('#gres'), gsBox = $('#gsearch');
+let gsSel = -1, gsTimer = 0, gsAll = new Set(), gsLastQ = '';
+const gsNorm = s=>String(s || '').toLowerCase();
+function gsHits(q){
+  const lq = gsNorm(q).trim(); if (!lq) return [];
+  const words = lq.split(/\s+/).filter(Boolean), out = [];
+  for (const i of S.issues){
+    const k = gsNorm(key(i)), ti = gsNorm(i.title);
+    const rest = [i.desc, boardOf(i)?.name, ...i.labels, ...(i.subtasks || []).map(x=>x.text), ...(i.comments || []).map(c=>c.text)].map(gsNorm).join('\n');
+    if (!words.every(w=>k.includes(w) || ti.includes(w) || rest.includes(w))) continue;
+    // best first: the key itself, then titles that start with it, contain it, and finally other text
+    const score = k === lq ? 0 : ti.startsWith(lq) ? 1 : ti.includes(lq) ? 2 : words.every(w=>ti.includes(w) || k.includes(w)) ? 3 : 4;
+    out.push({i, score});
+  }
+  return out.sort((a, z)=>a.score - z.score || (isDone(a.i) - isDone(z.i)) || z.i.updated - a.i.updated).map(x=>x.i);
+}
+function gsHL(s, q){
+  const words = gsNorm(q).trim().split(/\s+/).filter(Boolean); if (!words.length) return esc(s);
+  const ls = gsNorm(s); const marks = new Array(s.length).fill(false);
+  words.forEach(w=>{ let j = 0; while ((j = ls.indexOf(w, j)) > -1){ for (let k = j; k < j + w.length; k++) marks[k] = true; j += w.length; } });
+  let out = '', on = false;
+  for (let k = 0; k < s.length; k++){ if (marks[k] !== on){ out += on ? '</mark>' : '<mark>'; on = marks[k]; } out += esc(s[k]); }
+  return out + (on ? '</mark>' : '');
+}
+// where the words matched, when it is not in the title: a short piece of that text
+function gsSnippet(i, q){
+  const w = gsNorm(q).trim().split(/\s+/)[0]; if (!w || gsNorm(i.title).includes(w) || gsNorm(key(i)).includes(w)) return '';
+  const src = [i.desc, ...(i.subtasks || []).map(x=>x.text), ...(i.comments || []).map(c=>c.text), ...i.labels].find(x=>gsNorm(x).includes(w)); if (!src) return '';
+  const j = gsNorm(src).indexOf(w), a = Math.max(0, j - 30), piece = (a ? '…' : '') + String(src).slice(a, j + w.length + 50).replace(/\s+/g, ' ') + (j + w.length + 50 < src.length ? '…' : '');
+  return `<span class="gs-snip" data-bidi>${gsHL(piece, q)}</span>`;
+}
+function gsRow(i, q){
+  const c = colOf(i), b = boardOf(i);
+  return `<button class="gs-hit${isDone(i) ? ' done' : ''}" role="option" id="gs-${i.id}" data-act="gs-go" data-id="${i.id}" tabindex="-1">${typeIcon(i.type)}
+    <span class="gs-main"><span class="gs-t" data-bidi>${gsHL(i.title || t('issue.untitled'), q)}</span>${gsSnippet(i, q)}</span>
+    <span class="gs-meta">${b ? bAv(b, 'xs') : ''}<span class="gs-key">${gsHL(key(i), q)}</span>${i.archived ? `<span class="loz st">${esc(t('issue.archived'))}</span>` : c ? lozC(c) : ''}</span></button>`;
+}
+function gsRender(){
+  const q = gq.value; gsSel = -1;
+  if (q.trim() !== gsLastQ){ gsAll.clear(); gsLastQ = q.trim(); }
+  if (!q.trim()){ gsClose(false); return; }
+  const hits = gsHits(q), live = hits.filter(i=>!i.archived), arch = hits.filter(i=>i.archived);
+  const group = (title, l, cls)=>{ const cap = gsAll.has(cls) ? 200 : cls === 'live' ? 8 : 5;
+    return l.length ? `<div class="gs-g ${cls}"><div class="gs-gh">${esc(title)}<span class="sec-meta">${l.length}</span></div>${l.slice(0, cap).map(i=>gsRow(i, q)).join('')}${l.length > cap ? `<button class="gs-more" data-act="gs-more" data-g="${cls}" tabindex="-1">${esc(t('gs.more', {n:l.length - cap}))}</button>` : ''}</div>` : ''; };
+  gres.innerHTML = hits.length ? group(t('gs.tasks'), live, 'live') + group(t('gs.archived'), arch, 'arch') : `<p class="gs-none">${esc(t('gs.none', {q:q.trim()}))}</p>`;
+  gres.hidden = false; gq.setAttribute('aria-expanded', 'true');
+}
+function gsClose(clear){
+  gres.hidden = true; gq.setAttribute('aria-expanded', 'false'); gsSel = -1;
+  if (clear){ gq.value = ''; gsBox.classList.remove('open'); }
+}
+function gsMove(d){
+  const hits = $$('.gs-hit', gres); if (!hits.length) return;
+  gsSel = (gsSel + d + hits.length) % hits.length;
+  hits.forEach((h, k)=>h.classList.toggle('on', k === gsSel)); hits[gsSel].scrollIntoView({block:'nearest'});
+  gq.setAttribute('aria-activedescendant', hits[gsSel].id);
+}
+gq.addEventListener('input', ()=>{ clearTimeout(gsTimer); gsTimer = setTimeout(gsRender, 90); });
+gq.addEventListener('focus', ()=>{ if (gq.value.trim()) gsRender(); });
+gq.addEventListener('keydown', e=>{
+  if (e.key === 'ArrowDown'){ e.preventDefault(); gsMove(1); }
+  else if (e.key === 'ArrowUp'){ e.preventDefault(); gsMove(-1); }
+  else if (e.key === 'Enter'){ e.preventDefault(); const h = $$('.gs-hit', gres)[gsSel < 0 ? 0 : gsSel]; if (h) gsGo(h.dataset.id); }
+  else if (e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); if (gq.value){ gsClose(true); } else { gsClose(true); gq.blur(); } }
+});
+gres.addEventListener('pointerdown', e=>e.preventDefault()); // keep the focus in the box while clicking a result
+function gsGo(id){
+  gsClose(false); gq.blur(); gsBox.classList.remove('open');
+  openIssue(id);
+}
+document.addEventListener('pointerdown', e=>{ if (!gres.hidden && !e.target.closest('#gsearch')) gsClose(false); if (gsBox.classList.contains('open') && !e.target.closest('#gsearch') && !gq.value) gsBox.classList.remove('open'); }, true);
+const gsFocus = ()=>{ gsBox.classList.add('open'); gq.focus(); gq.select(); if (gq.value.trim()) gsRender(); };
+$('#gsKbd').textContent = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘K' : 'Ctrl K';
+document.addEventListener('keydown', e=>{
+  if (screen === 'app' && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key.toLowerCase() === 'k' || e.code === 'KeyK')){ e.preventDefault(); if (modalKind) closeModal(); closePop(); gsFocus(); }
+});
 
 /* ================= Toasts ================= */
 function toast(msg, opt={}){
