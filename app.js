@@ -3724,8 +3724,17 @@ document.addEventListener('keydown', e=>{
 });
 
 /* ================= Toasts ================= */
+/* On phones the on-screen keyboard covers the bottom of the page (it stays open while adding several
+   tasks in a row from a board column), so the messages sit just above the keyboard instead. */
+const vvp = window.visualViewport;
+function placeToasts(){
+  if (!vvp) return;
+  const kb = Math.max(0, Math.round(innerHeight - (vvp.offsetTop + vvp.height)));
+  $('#toasts').style.setProperty('--kb', (kb > 40 ? kb : 0) + 'px');
+}
+vvp?.addEventListener('resize', placeToasts); vvp?.addEventListener('scroll', placeToasts);
 function toast(msg, opt={}){
-  const box = $('#toasts');
+  const box = $('#toasts'); placeToasts();
   while (box.children.length >= 3) box.firstElementChild.remove();
   const el = document.createElement('div'); el.className = 'toast'; el.setAttribute('role','status');
   el.innerHTML = `<span class="t-check">${I.check}</span><span class="t-body"><span class="t-msg"></span>${opt.sub ? '<span class="t-sub" data-bidi></span>' : ''}</span>${opt.action?`<button class="btn sm${opt.open ? ' primary' : ''}">${opt.open ? I.open || '' : ''}${esc(opt.action)}</button>`:''}`;
