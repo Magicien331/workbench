@@ -1045,6 +1045,39 @@ function renderList(archive){
    sync with the board (and with everyone else) with no extra data. */
 const sheetview = $('#sheetview');
 let sheetSort = {k:null, dir:1}, sheetCache = null, sheetPending = false, sheetFocusVal = null, lastTouch = null;
+/* ----- width of the task name column: drag its edge, arrow keys on the handle, double-click to reset ----- */
+const TITLE_W = [140, 900];
+const sheetTitleW = ()=>{ const w = Number(P.sheetTitleW); return w >= TITLE_W[0] && w <= TITLE_W[1] ? Math.round(w) : 0; };
+function setTitleW(w, save){
+  const tb = $('.sheet', sheetview); if (!tb) return;
+  if (w){ w = Math.round(Math.min(TITLE_W[1], Math.max(TITLE_W[0], w))); tb.style.setProperty('--title-w', w + 'px'); } else tb.style.removeProperty('--title-w');
+  const h = $('.col-rz', tb); if (h) h.setAttribute('aria-valuenow', w || $('.h-title', tb)?.offsetWidth || '');
+  if (save){ if (w) P.sheetTitleW = w; else delete P.sheetTitleW; savePrefs(); }
+}
+let rz = null;
+sheetview.addEventListener('pointerdown', e=>{
+  const h = e.target.closest('.col-rz'); if (!h || e.button > 0) return;
+  e.preventDefault(); e.stopPropagation();
+  rz = {x:e.clientX, w:h.closest('th').getBoundingClientRect().width, id:e.pointerId, moved:false};
+  try { h.setPointerCapture(e.pointerId); } catch {} h.classList.add('on'); document.body.classList.add('rz-ing');
+});
+sheetview.addEventListener('pointermove', e=>{
+  if (!rz || e.pointerId !== rz.id) return;
+  // the handle sits on the column's far edge: to the left in Hebrew, to the right in English
+  const dx = (e.clientX - rz.x) * (rtl() ? -1 : 1); if (Math.abs(dx) > 2) rz.moved = true;
+  setTitleW(rz.w + dx, false);
+});
+const rzEnd = e=>{ if (!rz || (e && e.pointerId !== rz.id)) return; const h = $('.col-rz.on', sheetview); h?.classList.remove('on'); document.body.classList.remove('rz-ing');
+  if (rz.moved){ const w = $('.sheet .h-title', sheetview)?.getBoundingClientRect().width; setTitleW(w, true); } rz = null; };
+sheetview.addEventListener('pointerup', rzEnd); sheetview.addEventListener('pointercancel', rzEnd);
+sheetview.addEventListener('dblclick', e=>{ if (e.target.closest('.col-rz')){ e.preventDefault(); setTitleW(0, true); toast(t('sheet.resized')); } });
+sheetview.addEventListener('keydown', e=>{
+  const h = e.target.closest?.('.col-rz'); if (!h) return;
+  const cur = h.closest('th').getBoundingClientRect().width, step = e.shiftKey ? 60 : 20, grow = rtl() ? 'ArrowLeft' : 'ArrowRight', shrink = rtl() ? 'ArrowRight' : 'ArrowLeft';
+  if (e.key === grow){ e.preventDefault(); setTitleW(cur + step, true); }
+  else if (e.key === shrink){ e.preventDefault(); setTitleW(cur - step, true); }
+  else if (e.key === 'Home'){ e.preventDefault(); setTitleW(0, true); }
+});
 // every column the table can show; the task name is always shown, the rest can be hidden (P.sheetHide, per device)
 const sheetAllCols = ()=>['key','title','status','prio',...(isAll() ? ['board'] : []),'type','plat','start','due','company','desc','subs','by'];
 const sheetHidden = ()=>new Set((Array.isArray(P.sheetHide) ? P.sheetHide : []).filter(k=>k !== 'title'));
@@ -1081,7 +1114,7 @@ function sheetCell(i, k, edit){
   const menu = (f, inner, cls='')=>ro ? `<span class="chip ${cls}">${inner}</span>` : `<button class="chip ${cls}" data-act="s-menu" data-sf="${f}" data-id="${id}" aria-haspopup="menu">${inner}${I.chev}</button>`;
   switch(k){
     case 'key': return `<td class="s-key"><button class="s-open" data-act="open-issue" data-id="${id}" title="${esc(t('sheet.open'))}">${typeIcon(i.type)}<span class="key${isDone(i)?' done':''}">${esc(key(i))}</span></button></td>`;
-    case 'title': return `<td class="s-title">${ro ? `<span class="s-ro" data-bidi>${hl(i.title || t('issue.untitled'))}</span>` : `<input class="s-in" data-sf="title" data-id="${id}" value="${esc(i.title)}" data-bidi autocomplete="off" aria-label="${esc(t('x.col.title'))}">`}</td>`;
+    case 'title': return `<td class="s-title">${ro ? `<span class="s-ro" data-bidi>${hl(i.title || t('issue.untitled'))}</span>` : `<input class="s-in" data-sf="title" data-id="${id}" value="${esc(i.title)}" title="${esc(i.title)}" data-bidi autocomplete="off" aria-label="${esc(t('x.col.title'))}">`}</td>`;
     case 'status': { const c = colOf(i); return `<td>${menu('status', `<span class="dot"></span><span data-bidi>${esc(c?.name || '')}</span>`, 'st '+(c?.cat||''))}</td>`; }
     case 'prio': return `<td>${menu('prio', `${prioIcon(i.priority)}<span>${esc(prioName(i.priority))}</span>`, 'pr')}</td>`.replace('class="chip pr"', `class="chip pr" style="--pc:${PRIO_TINT[i.priority]}"`);
     case 'board': return `<td>${menu('board', `${bAv(boardOf(i),'xs')}<span data-bidi>${esc(boardOf(i)?.name || '')}</span>`, 'plain')}</td>`;
@@ -1232,12 +1265,12 @@ function renderSheet(){
   if (foc && foc !== 'add' && sheetCache && tb){ sheetPending = true; return; } // rows added/removed/re-ordered: rebuild once the edit is done
   const addVal = foc === 'add' ? a.value : null;
   const same = sheetCache && sheetCache.scope === scope, sx = same ? sheetview.scrollLeft : 0, sy = same ? sheetview.scrollTop : 0;
-  const head = cols.map(k=>`<th class="h-${k}"><div class="th-in"><button data-act="s-sort" data-k="${k}" class="th-sort ${sheetSort.k===k?'on':''}${sheetSort.k===k&&sheetSort.dir<0?' desc':''}">${esc(t('x.col.'+k))}${I.arrow}</button>${SF_KIND[k] ? `<button class="s-filt${sheetF[k] ? ' on' : ''}" data-act="s-filter" data-k="${k}" aria-haspopup="menu" aria-label="${esc(t('sf.by', {col:t('x.col.'+k)}))}" title="${esc(t('sf.by', {col:t('x.col.'+k)}))}">${I.funnel}</button>` : ''}</div></th>`).join('');
+  const head = cols.map(k=>`<th class="h-${k}"><div class="th-in"><button data-act="s-sort" data-k="${k}" class="th-sort ${sheetSort.k===k?'on':''}${sheetSort.k===k&&sheetSort.dir<0?' desc':''}">${esc(t('x.col.'+k))}${I.arrow}</button>${SF_KIND[k] ? `<button class="s-filt${sheetF[k] ? ' on' : ''}" data-act="s-filter" data-k="${k}" aria-haspopup="menu" aria-label="${esc(t('sf.by', {col:t('x.col.'+k)}))}" title="${esc(t('sf.by', {col:t('x.col.'+k)}))}">${I.funnel}</button>` : ''}</div>${k === 'title' ? `<span class="col-rz" role="separator" aria-orientation="vertical" tabindex="0" aria-label="${esc(t('sheet.resize'))}" title="${esc(t('sheet.resizeTip'))}" aria-valuemin="${TITLE_W[0]}" aria-valuemax="${TITLE_W[1]}" aria-valuenow="${sheetTitleW() || ''}"></span>` : ''}</th>`).join('');
   const fbar = sheetFBar();
   const empty = !rows.length ? `<tr class="s-empty"><td colspan="${cols.length}">${esc(filtering() || sheetFCount() ? t('empty.listFiltered') : t('sheet.empty'))}</td></tr>` : '';
   // the add bar lives outside the table: a sticky table footer cell drew as a blank box over the name column in iOS Safari
   const add = edit ? `<form data-form="sheet-add" class="s-addbar">${I.plus}<input data-k="sheet-add" placeholder="${esc(all ? t('sheet.addIn', {board:(boardById(P.lastBoard?.[wsId]) || S.boards[0]).name}) : t('sheet.add'))}" data-bidi autocomplete="off" enterkeyhint="done" aria-label="${esc(t('sheet.add'))}"></form>` : '';
-  sheetview.innerHTML = fbar + `<table class="sheet${all?' all':''}${cols.includes('key') ? '' : ' nokey'}"><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody></table>${add}`;
+  sheetview.innerHTML = fbar + `<table class="sheet${all?' all':''}${cols.includes('key') ? '' : ' nokey'}"${sheetTitleW() ? ` style="--title-w:${sheetTitleW()}px"` : ''}><thead><tr>${head}</tr></thead><tbody>${rows.map(r=>r[1]).join('')}${empty}${moreRow()}</tbody></table>${add}`;
   sheetview.scrollLeft = sx; sheetview.scrollTop = sy;
   if (addVal != null){ const ad = $('[data-k="sheet-add"]', sheetview); if (ad){ ad.value = addVal; ad.focus({preventScroll:true}); } }
   sheetCache = {key:layoutKey, order, html:new Map(rows), scope};
@@ -3763,7 +3796,7 @@ $('#importFile').addEventListener('change', async e=>{
 
 /* ================= Theme, language, shell ================= */
 const sysDark = matchMedia('(prefers-color-scheme: dark)');
-const THEMES = ['light','dark','purple','purplelight','purpledark','blackred','blackyellow'];
+const THEMES = ['light','dark','purple','purplelight','purpledark','royal','blackred','blackyellow'];
 const DARK_THEMES = new Set(['dark','purpledark','blackred','blackyellow']);
 const effectiveTheme = ()=>THEMES.includes(P.theme) ? P.theme : (sysDark.matches ? 'dark' : 'light');
 const themeIcon = ()=>{ const th = effectiveTheme(); return th === 'light' ? I.sun : th === 'dark' ? I.moon : I.palette; };
@@ -3771,7 +3804,7 @@ const themeIcon = ()=>{ const th = effectiveTheme(); return th === 'light' ? I.s
 const THEME_SW = {light:['#FFFFFF','linear-gradient(135deg,#F4F6FA,#E9F2FF)','#0C66E4'], dark:['#2C333A','linear-gradient(135deg,#1D2125,#161A1D)','#579DFF'],
   purple:['linear-gradient(90deg,#4A2373,#7E4CB8)','linear-gradient(135deg,#FAF7FE,#EBDFFA)','#6B3FA0'], purplelight:['linear-gradient(90deg,#F1E8FD,#E4D4FB)','linear-gradient(135deg,#FDFBFF,#F3ECFD)','#8A5BD8'],
   purpledark:['linear-gradient(90deg,#24123B,#3E2066)','linear-gradient(135deg,#1C1428,#130D1C)','#B18CF2'], blackred:['#0B0B0D','linear-gradient(135deg,#141416,#0B0B0D)','#E5484D'],
-  blackyellow:['#0B0B0D','linear-gradient(135deg,#141416,#0B0B0D)','#F5C518']};
+  blackyellow:['#0B0B0D','linear-gradient(135deg,#141416,#0B0B0D)','#F5C518'], royal:['linear-gradient(90deg,#2A0F45,#4B1C6E)','linear-gradient(135deg,#FFFCF4,#F5EEDD)','#C9A23A']};
 function themePicker(){
   return `<div class="menu-h th">${esc(t('theme.title'))}</div><div class="theme-row" role="group" aria-label="${esc(t('theme.title'))}">${THEMES.map(th=>
     `<button type="button" class="theme-opt" data-act="set-theme" data-th="${th}" aria-pressed="${th===effectiveTheme()}"><span class="sw-t"><i style="background:${THEME_SW[th][0]}"></i><i style="background:${THEME_SW[th][1]}"></i><b style="background:${THEME_SW[th][2]}"></b></span>${esc(t('theme.'+th))}</button>`).join('')}</div>`;
@@ -3783,7 +3816,7 @@ function setTheme(th, animate){
   if (animate && !reduce && document.startViewTransition && root.dataset.theme !== effectiveTheme()) document.startViewTransition(apply);
   else apply();
   const btn = $('#themeBtn'); if (btn){ btn.innerHTML = themeIcon(); btn.title = btn.ariaLabel = t('nav.theme'); btn.setAttribute('aria-haspopup', 'menu'); }
-  const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = {light:'#FFFFFF', dark:'#1D2125', purple:'#4A2373', purplelight:'#F1E8FD', purpledark:'#24123B', blackred:'#0B0B0D', blackyellow:'#0B0B0D'}[effectiveTheme()];
+  const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = {light:'#FFFFFF', dark:'#1D2125', purple:'#4A2373', purplelight:'#F1E8FD', purpledark:'#24123B', royal:'#2A0F45', blackred:'#0B0B0D', blackyellow:'#0B0B0D'}[effectiveTheme()];
 }
 sysDark.addEventListener?.('change', ()=>{ if (!P.theme) setTheme(null); });
 function applyShell(){ shell.classList.toggle('side-closed', !P.side); }
