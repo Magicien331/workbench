@@ -102,7 +102,10 @@ async function firebaseStore(){
     watchIncoming(email, cb, onErr){ return F.onSnapshot(F.query(col('requests'), F.where('toEmail','==',email)), s=>cb(docs(s).map(d=>({id:d.id, ...d.data}))), onErr); },
     watchOutgoing(uid, cb, onErr){ return F.onSnapshot(F.query(col('requests'), F.where('fromUid','==',uid)), s=>cb(docs(s).map(d=>({id:d.id, ...d.data}))), onErr); },
     updateRequest(id, patch){ return F.updateDoc(ref('requests', id), patch); },
-    deleteRequest(id){ return F.deleteDoc(ref('requests', id)); }
+    deleteRequest(id){ return F.deleteDoc(ref('requests', id)); },
+    // one private document per person per workspace (only that person can read or write it)
+    async getPrivate(wsId, uid){ const s = await F.getDoc(ref('workspaces', wsId, 'private', uid)); return s.exists() ? s.data() : null; },
+    setPrivate(wsId, uid, data){ return F.setDoc(ref('workspaces', wsId, 'private', uid), data); }
   };
 }
 
@@ -175,6 +178,8 @@ function demoStore(){
     watchIncoming(email, cb){ return sub(()=>cb(Object.entries(db.requests).filter(([,r])=>r.toEmail === email).map(([id,r])=>({id, ...clone(r)})))); },
     watchOutgoing(u, cb){ return sub(()=>cb(Object.entries(db.requests).filter(([,r])=>r.fromUid === u).map(([id,r])=>({id, ...clone(r)})))); },
     async updateRequest(id, patch){ const r = db.requests[id]; if (!r || r.toEmail !== me()?.email) return deny(); Object.assign(r, clone(patch)); persist(); },
-    async deleteRequest(id){ delete db.requests[id]; persist(); }
+    async deleteRequest(id){ delete db.requests[id]; persist(); },
+    async getPrivate(wsId, u){ return clone((db.private || {})[wsId + '/' + u] ?? null); },
+    async setPrivate(wsId, u, data){ if (!me() || me().uid !== u) return deny(); (db.private ||= {})[wsId + '/' + u] = clone(data); try { localStorage.setItem(KEY, JSON.stringify(db)); } catch(e){} }
   };
 }

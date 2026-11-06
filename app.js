@@ -1427,8 +1427,105 @@ function icsFold(line){
   for (const ch of line){ const b = enc.encode(ch).length; if (n + b > lim){ out.push(cur); cur = ' '; n = 1; lim = 75; } cur += ch; n += b; }
   out.push(cur); return out.join('\r\n');
 }
-function exportIcs(){
-  const list = scopeIssues().filter(matches).filter(i=>i.due && !isDone(i)).sort((a,b)=>a.due.localeCompare(b.due));
+/* ----- what this person already sent to their calendar -----
+   Kept per person and workspace: in this browser, and (when the database rules allow it) in a private
+   document only that person can read, so it follows them to other devices. For every task sent: its due
+   date and title at that time, so a later file can offer only what is new or changed. */
+const ICS_MAX = 3000;
+const icsLocalKey = ()=>`workbench.ics.v1.${user?.uid || ''}.${wsId || ''}`;
+function icsClean(m){
+  if (!m || typeof m !== 'object') return null;
+  const tasks = {};
+  for (const [id, v] of Object.entries(m.tasks && typeof m.tasks === 'object' ? m.tasks : {})) if (SAFE_ID.test(id) && v && typeof v === 'object') tasks[id] = {d:isISO(v.d) ? v.d : '', t:String(v.t || '').slice(0, 120), at:Number(v.at) || 0};
+  const o = m.opts && typeof m.opts === 'object' ? m.opts : {};
+  return {at:Number(m.at) || 0, n:Number(m.n) || 0, files:Number(m.files) || 0, tasks,
+    opts:{boards:Array.isArray(o.boards) ? o.boards.filter(x=>typeof x === 'string').slice(0, 200) : null, mine:!!o.mine}};
+}
+function icsMerge(a, b){
+  if (!a) return b; if (!b) return a;
+  const tasks = {...a.tasks}; for (const [id, v] of Object.entries(b.tasks)) if (!tasks[id] || v.at > tasks[id].at) tasks[id] = v;
+  return {...(b.at > a.at ? b : a), tasks};
+}
+async function icsLoad(){
+  let m = null; try { m = icsClean(JSON.parse(localStorage.getItem(icsLocalKey()))); } catch {}
+  try { const r = await Promise.race([store.getPrivate?.(wsId, user.uid), new Promise(ok=>setTimeout(ok, 2500))]); if (r?.ics) m = icsMerge(m, icsClean(r.ics)); } catch {}
+  return m;
+}
+async function icsSave(m){
+  // drop tasks that no longer exist, keep the most recent ones
+  const tasks = Object.entries(m.tasks).filter(([id])=>get(id)).sort((a, b)=>b[1].at - a[1].at).slice(0, ICS_MAX);
+  m = {...m, tasks:Object.fromEntries(tasks)};
+  try { localStorage.setItem(icsLocalKey(), JSON.stringify(m)); } catch {}
+  try { await store.setPrivate?.(wsId, user.uid, {ics:m}); } catch(e){ /* rules not published yet: kept in this browser */ }
+  return m;
+}
+const icsTitle = i=>(i.title || '').slice(0, 120);
+function icsState(i, mem){ const r = mem?.tasks[i.id]; return !r ? 'new' : (r.d !== i.due || r.t !== icsTitle(i)) ? 'changed' : 'sent'; }
+/* ----- the export window ----- */
+let icsDlg = null;
+function icsCandidates(d){
+  const tday = today(), me = meKey();
+  return S.issues.filter(i=>!i.archived && i.due && !isDone(i) && boardOf(i) && (!d.boards || d.boards.has(i.boardId)) && (!d.mine || peopleOf(i).some(p=>pKey(p) === me)))
+    .sort((a, b)=>a.due.localeCompare(b.due) || key(a).localeCompare(key(b), undefined, {numeric:true}))
+    .map(i=>({i, st:icsState(i, d.mem), past:i.due < tday}));
+}
+function icsDefaultSel(d){
+  const c = icsCandidates(d).filter(x=>d.past || !x.past);
+  return new Set((d.mode === 'all' ? c : c.filter(x=>x.st !== 'sent')).map(x=>x.i.id));
+}
+async function openIcsExport(){
+  const mem = await icsLoad();
+  const keepBoards = mem?.opts.boards?.filter(id=>boardById(id));
+  const d = {mem, mode:mem && mem.at ? 'new' : 'all', past:false, mine:!!mem?.opts.mine,
+    boards:keepBoards?.length ? new Set(keepBoards) : (isAll() ? null : new Set([curBoard()?.id].filter(Boolean)))};
+  d.sel = icsDefaultSel(d);
+  icsDlg = d;
+  const dlg = showModal(icsHTML(), 'ics', 'narrow'); dlg.setAttribute('aria-label', t('ics.title'));
+}
+function icsHTML(){
+  const d = icsDlg, all = icsCandidates(d), pastN = all.filter(x=>x.past).length, list = all.filter(x=>d.past || !x.past);
+  [...d.sel].forEach(id=>{ if (!list.some(x=>x.i.id === id)) d.sel.delete(id); });
+  const nNew = list.filter(x=>x.st !== 'sent').length, sel = list.filter(x=>d.sel.has(x.i.id)).length, mem = d.mem, shared = isShared();
+  const tag = x=>x.past ? `<span class="ics-tag past">${esc(t('ics.tag.past'))}</span>` : x.st === 'new' ? `<span class="ics-tag new">${esc(t('ics.tag.new'))}</span>`
+    : x.st === 'changed' ? `<span class="ics-tag chg" title="${esc(t('ics.wasDue', {date:fmtDay(mem.tasks[x.i.id].d)}))}">${esc(t('ics.tag.changed'))}</span>` : `<span class="ics-tag sent" title="${esc(fmtTime(mem.tasks[x.i.id].at))}">${esc(t('ics.tag.sent'))}</span>`;
+  return `${head(t('ics.title'))}<div class="c-body ics-body">
+    <p class="ics-last">${mem && mem.at ? `${I.clock}<span>${esc(t('ics.last', {date:fmtTime(mem.at), n:tn('issues', mem.n)}))} · ${esc(tn('ics.total', Object.keys(mem.tasks).length))}</span><button class="link-btn" data-act="ics-forget">${esc(t('ics.forget'))}</button>` : `${I.cal}<span>${esc(t('ics.first'))}</span>`}</p>
+    <div class="seg ics-mode" role="group" aria-label="${esc(t('ics.what'))}">
+      <button data-act="ics-mode" data-m="new" aria-pressed="${d.mode === 'new'}"${mem && mem.at ? '' : ' disabled'}>${esc(t('ics.mNew'))}${mem && mem.at ? `<b>${nNew}</b>` : ''}</button>
+      <button data-act="ics-mode" data-m="all" aria-pressed="${d.mode === 'all'}">${esc(t('ics.mAll'))}<b>${list.length}</b></button>
+      <button data-act="ics-mode" data-m="pick" aria-pressed="${d.mode === 'pick'}">${esc(t('ics.mPick'))}</button></div>
+    <p class="ics-explain${d.mode === 'new' && !nNew && list.length ? ' none' : ''}">${esc(d.mode === 'new' && !nNew && list.length ? t('ics.noNew') : t('ics.explain.' + d.mode))}</p>
+    <div class="ics-filters">
+      <div class="ics-boards" role="group" aria-label="${esc(t('ics.boards'))}"><button class="ics-chip${!d.boards ? ' on' : ''}" data-act="ics-board" data-id="" aria-pressed="${!d.boards}">${esc(t('nav.allBoards'))}</button>${S.boards.slice().sort((a, b)=>(a.order ?? 0) - (b.order ?? 0)).map(b=>`<button class="ics-chip${d.boards?.has(b.id) ? ' on' : ''}" data-act="ics-board" data-id="${b.id}" aria-pressed="${!!d.boards?.has(b.id)}">${bAv(b, 'xs')}<span data-bidi>${esc(b.name)}</span></button>`).join('')}</div>
+      <div class="ics-opts">${shared ? `<label class="chk-l"><input type="checkbox" data-k="ics-mine"${d.mine ? ' checked' : ''}>${esc(t('ics.mine'))}</label>` : ''}
+        ${pastN ? `<label class="chk-l"><input type="checkbox" data-k="ics-past"${d.past ? ' checked' : ''}>${esc(tn('ics.past', pastN))}</label>` : ''}</div>
+    </div>
+    <div class="ics-lh"><b>${esc(t('ics.selOf', {n:sel, of:list.length}))}</b>${list.length ? `<span class="sp"></span><button class="link-btn" data-act="ics-selall">${esc(t('ics.selAll'))}</button><button class="link-btn" data-act="ics-selnone">${esc(t('ics.selNone'))}</button>` : ''}</div>
+    <ul class="ics-list">${list.map(x=>{ const i = x.i, on = d.sel.has(i.id);
+      return `<li><label class="ics-it${on ? ' on' : ''}"><input type="checkbox" data-k="ics-t" value="${i.id}"${on ? ' checked' : ''}>${isAll() || !d.boards || d.boards.size > 1 ? bAv(boardOf(i), 'xs') : ''}<span class="ics-key">${esc(key(i))}</span><span class="ics-t" data-bidi>${esc(i.title || t('issue.untitled'))}</span><span class="ics-due${x.past ? ' over' : ''}">${esc(fmtDay(i.due))}</span>${tag(x)}</label></li>`; }).join('')
+      || `<li class="muted-p ics-empty">${esc(d.mode === 'new' && all.length ? t('ics.noNew') : t('ics.none'))}</li>`}</ul>
+  </div>
+  <div class="m-foot"><span class="ics-hint">${esc(t('ics.hint'))}</span><span class="sp"></span><button class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button>
+    <button class="btn primary" data-act="ics-go"${sel ? '' : ' disabled'}>${I.down}${esc(tn('ics.go', sel))}</button></div>`;
+}
+function icsRefresh(){
+  if (modalKind !== 'ics' || !icsDlg) return;
+  const dlg = $('.dialog', layer), ul = $('.ics-list', dlg), sc = ul?.scrollTop || 0;
+  rerender(dlg, icsHTML());
+  const u2 = $('.ics-list', dlg); if (u2) u2.scrollTop = sc;
+}
+async function icsExportNow(){
+  const d = icsDlg; if (!d) return;
+  const list = icsCandidates(d).filter(x=>(d.past || !x.past) && d.sel.has(x.i.id)).map(x=>x.i);
+  if (!list.length) return;
+  exportIcs(list);
+  const now = Date.now(), m = d.mem ? {...d.mem, tasks:{...d.mem.tasks}} : {at:0, n:0, files:0, tasks:{}, opts:{}};
+  list.forEach(i=>{ m.tasks[i.id] = {d:i.due, t:icsTitle(i), at:now}; });
+  m.at = now; m.n = list.length; m.files = (m.files || 0) + 1; m.opts = {boards:d.boards ? [...d.boards] : null, mine:d.mine};
+  icsDlg = null; closeModal();
+  await icsSave(m);
+}
+function exportIcs(list){
   if (!list.length) return toast(t('cal.icsNone'));
   const stamp = new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d+/,'');
   const d8 = s=>s.replace(/-/g,'');
@@ -2188,6 +2285,7 @@ function showModal(html, kind, size=''){
 }
 function closeModal(instant){
   if (!modalKind) return;
+  if (modalKind === 'ics') icsDlg = null;
   closePop();
   if (modalKind === 'issue'){
     const i = get(openId);
@@ -2741,6 +2839,15 @@ layer.addEventListener('keydown', e=>{
 }, true);
 layer.addEventListener('change', e=>{
   const el = e.target, k = el.dataset?.k || '';
+  if (modalKind === 'ics' && icsDlg){
+    if (k === 'ics-t'){ icsDlg.mode = 'pick'; el.checked ? icsDlg.sel.add(el.value) : icsDlg.sel.delete(el.value); }
+    else if (k === 'ics-mine'){ icsDlg.mine = el.checked; if (icsDlg.mode !== 'pick') icsDlg.sel = icsDefaultSel(icsDlg); }
+    else if (k === 'ics-past'){ icsDlg.past = el.checked;
+      // turning past tasks on adds them to the selection (in "new" mode only the ones not sent yet)
+      const add = icsCandidates(icsDlg).filter(x=>x.past && (icsDlg.mode === 'all' || x.st !== 'sent'));
+      if (icsDlg.mode !== 'pick' || el.checked) add.forEach(x=>el.checked ? icsDlg.sel.add(x.i.id) : icsDlg.sel.delete(x.i.id)); }
+    icsRefresh(); return;
+  }
   if (k === 'rel-kind' && relPick){ relPick.k = REL_KINDS.includes(el.value) ? el.value : 'rel'; return; }
   if (modalKind === 'create'){
     if (el.name === 'type') el.previousElementSibling.outerHTML = typeIcon(el.value);
@@ -3039,7 +3146,19 @@ document.addEventListener('click', async e=>{
     case 'card-menu': openPop(b, statusMenu(i, true), i.id); break;
     case 'status-menu': openPop(b, statusMenu(i, false), i.id); break;
     case 's-menu': if (i) openPop(b, sheetMenu(i, b.dataset.sf), i.id); break;
-    case 'cal-ics': exportIcs(); break;
+    case 'cal-ics': openIcsExport(); break;
+    case 'ics-mode': if (!icsDlg) break; icsDlg.mode = b.dataset.m; if (icsDlg.mode !== 'pick') icsDlg.sel = icsDefaultSel(icsDlg); icsRefresh(); break;
+    case 'ics-board': { if (!icsDlg) break; const id = b.dataset.id;
+      if (!id) icsDlg.boards = null;
+      else { const s = icsDlg.boards ? new Set(icsDlg.boards) : new Set(); s.has(id) ? s.delete(id) : s.add(id); icsDlg.boards = s.size && s.size < S.boards.length ? s : null; }
+      if (icsDlg.mode !== 'pick') icsDlg.sel = icsDefaultSel(icsDlg);
+      icsRefresh(); break; }
+    case 'ics-selall': if (!icsDlg) break; icsDlg.mode = 'pick'; icsDlg.sel = new Set(icsCandidates(icsDlg).filter(x=>icsDlg.past || !x.past).map(x=>x.i.id)); icsRefresh(); break;
+    case 'ics-selnone': if (!icsDlg) break; icsDlg.mode = 'pick'; icsDlg.sel = new Set(); icsRefresh(); break;
+    case 'ics-forget': { if (!icsDlg) break; const old = icsDlg.mem; icsDlg.mem = null; icsDlg.mode = 'all'; icsDlg.sel = icsDefaultSel(icsDlg); icsRefresh();
+      icsSave({at:0, n:0, files:0, tasks:{}, opts:old?.opts || {}});
+      toast(t('ics.forgot'), {action:t('btn.undo'), fn:async()=>{ await icsSave(old); if (icsDlg){ icsDlg.mem = old; icsRefresh(); } }}); break; }
+    case 'ics-go': icsExportNow(); break;
     case 'dash-range': P.dashWeeks = Number(b.dataset.w) || 8; savePrefs(); renderDash(); break;
     case 'dash-custom': openPop(b, dashCustomMenu(), 'dash'); break;
     case 'dash-toggle': case 'dash-hide': { const h = dashHidden(), w = b.dataset.w; h.has(w) && act === 'dash-toggle' ? h.delete(w) : h.add(w); P.dashHide = [...h]; savePrefs(); dashRefresh();

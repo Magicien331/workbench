@@ -48,8 +48,15 @@ service cloud.firestore {
 
       // Boards, tasks and settings inside a workspace
       match /{coll}/{docId} {
-        allow read: if signedIn() && canRead(wsId);
+        allow read: if signedIn() && coll in ['boards', 'issues', 'meta'] && canRead(wsId);
         allow write: if signedIn() && coll in ['boards', 'issues', 'meta'] && safeId(docId) && canWrite(wsId);
+      }
+
+      // Each person's own private settings in a workspace (for example which tasks they already sent to their calendar).
+      // Only that person can read or write it, and only while they have access to the workspace.
+      match /private/{uid} {
+        allow get: if signedIn() && request.auth.uid == uid && canRead(wsId);
+        allow create, update: if signedIn() && request.auth.uid == uid && canRead(wsId) && request.resource.data.keys().hasOnly(['ics']);
       }
     }
 
