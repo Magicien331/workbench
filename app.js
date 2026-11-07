@@ -4078,7 +4078,7 @@ async function readBackupFile(f){
    Columns: task, priority, client, status, start, due, documents, notes. Clients are boards, statuses are
    columns. Import adds new rows and updates matching tasks (same client + same task name); export writes
    the same sheet back. Tasks that are on the site but not in the sheet are left alone. */
-const TRK_HEAD = {title:['משימה','task'], prio:['עדיפות','priority'], client:['לקוח','client','customer'], status:['סטטוס','status'],
+const TRK_HEAD = {title:['משימה','task'], cat:['קטגוריה','סוג','category','type'], prio:['עדיפות','priority'], client:['לקוח','client','customer'], status:['סטטוס','status'],
   start:['תאריך התחלה','start','start date'], due:['דד ליין','due','due date','deadline'], docs:['מסמכים','documents','docs'], notes:['הערות','notes']};
 const TRK_PRIO_IN = {'גבוהה':'high', 'בינונית':'medium', 'נמוכה':'low', 'high':'high', 'medium':'medium', 'low':'low'};
 const TRK_PRIO_OUT = {highest:'גבוהה', high:'גבוהה', medium:'בינונית', low:'נמוכה', lowest:'נמוכה'};
@@ -4115,7 +4115,7 @@ function trkColumn(cols, word){
 function planTracker({sheet, hm}){
   const get = (r, k)=>hm[k] == null ? '' : r[hm[k]];
   const str = (r, k)=>String(get(r, k) ?? '').trim();
-  const newBoards = new Map(), newCols = new Map(), used = new Set(), rows = [];
+  const newBoards = new Map(), newCols = new Map(), newTypes = new Map(), used = new Set(), rows = [];
   const fallbackBoard = isAll() ? (boardById(P.lastBoard?.[wsId]) || S.boards[0]) : curBoard(), tplCols = COLS_PPC();
   sheet.rows.slice(1).forEach((r, k)=>{
     const title = str(r, 'title'); if (!title) return;
@@ -4128,6 +4128,9 @@ function planTracker({sheet, hm}){
     let col = sw ? trkColumn(cols, sw) : null;
     if (!col && sw){ const ck = bKey + '|' + loose(sw); if (!newCols.has(ck)) newCols.set(ck, {bKey, name:sw, cat:TRK_STATUS[sw] || 'doing'}); }
     const pw = str(r, 'prio'), prio = TRK_PRIO_IN[norm(pw)] || (pw ? 'medium' : null);
+    // her "קטגוריה" is the task's type on the site; one the site doesn't have yet is added
+    const tw = normLabel(str(r, 'cat')).slice(0, 60), ty = tw ? trkType(tw) : null;
+    if (tw && !ty && !newTypes.has(loose(tw))) newTypes.set(loose(tw), tw);
     const docCell = get(r, 'docs'), docText = String(docCell ?? '').trim(), docUrl = sheet.links?.[`${k+1},${hm.docs}`] || '';
     const links = []; const seen = new Set();
     const addL = (url, title)=>{ const u = normUrl(url); if (u && !seen.has(u)){ seen.add(u); links.push({url:u, title:title || ''}); } };
@@ -4135,32 +4138,35 @@ function planTracker({sheet, hm}){
     for (const m of docText.matchAll(/https?:\/\/[^\s<>"]+/g)) addL(m[0], '');
     const docNote = docText && !docUrl && !/https?:\/\//i.test(docText) ? docText : '';
     const row = {k, title, bKey, boardName:b ? b.name : cw, colId:b ? col?.id || null : null, statusWord:sw, prio, start:cellDate(get(r, 'start')), due:cellDate(get(r, 'due')),
-      links, notes:[String(get(r, 'notes') ?? '').trim(), docNote ? `${TRACKER.head[6]}: ${docNote}` : ''].filter(Boolean).join('\n'), alias:b && cw && !isOldClient(cw) && !sameText(b.name, cw) && !(b.alias && sameText(b.alias, cw)) ? cw : null};
+      typeId:ty?.id || null, typeWord:tw, links, notes:[String(get(r, 'notes') ?? '').trim(), docNote ? `${TRACKER.docsHead}: ${docNote}` : ''].filter(Boolean).join('\n'), alias:b && cw && !isOldClient(cw) && !sameText(b.name, cw) && !(b.alias && sameText(b.alias, cw)) ? cw : null};
     // same client + same name = the same task
     const ex = b ? S.issues.find(i=>!used.has(i.id) && i.boardId === b.id && sameText(i.title, title)) : null;
     if (ex){ used.add(ex.id); row.id = ex.id; row.changed = trkChanged(ex, row);
       row.kept = (!row.statusWord ? 1 : 0) + (!row.prio ? 1 : 0) + (!row.due && ex.due ? 1 : 0) + (!row.notes && ex.desc.trim() ? 1 : 0); }
     rows.push(row);
   });
-  return {rows, newBoards, newCols, sheetName:sheet.name};
+  return {rows, newBoards, newCols, newTypes, sheetName:sheet.name};
 }
+const trkType = w=>S.types.find(x=>sameText(x.name, w)) || S.types.find(x=>loose(x.name) === loose(w)) || null;
 // an empty cell never clears anything on the site: only filled cells update a task
 function trkChanged(i, r){
   const col = colOf(i);
   return (r.prio && TRK_PRIO_OUT[i.priority] !== TRK_PRIO_OUT[r.prio]) || (!!r.statusWord && (r.colId ? r.colId !== i.status : statusWord(col) !== r.statusWord))
     || (r.start && r.start !== i.start) || (r.due && r.due !== i.due) || (r.notes && r.notes !== (i.desc || '').trim())
-    || r.links.some(l=>!i.links.some(x=>x.url === l.url));
+    || r.links.some(l=>!i.links.some(x=>x.url === l.url))
+    || (!!r.typeWord && (r.typeId ? r.typeId !== typeOf(i.type).id : true));
 }
 let trackerPending = null;
 function openTrackerImport(plan){
   if (!plan.rows.length) return toast(t('trk.empty'));
   const add = plan.rows.filter(r=>!r.id).length, upd = plan.rows.filter(r=>r.id && r.changed).length, same = plan.rows.filter(r=>r.id && !r.changed).length;
-  const nb = [...plan.newBoards.values()], nc = [...new Set([...plan.newCols.values()].map(c=>c.name))];
+  const nb = [...plan.newBoards.values()], nc = [...new Set([...plan.newCols.values()].map(c=>c.name))], nt = [...plan.newTypes.values()];
   const dlg = showModal(`${head(t('trk.title'))}<div class="c-body">
       <p class="confirm-p">${esc(t('trk.found', {sheet:plan.sheetName, n:plan.rows.length}))}</p>
       <ul class="trk-sum"><li><b>${add}</b> ${esc(t('trk.new'))}</li><li><b>${upd}</b> ${esc(t('trk.upd'))}</li>${same ? `<li><b>${same}</b> ${esc(t('trk.same'))}</li>` : ''}</ul>
       ${nb.length ? `<p class="confirm-p">${esc(t('trk.newBoards'))} <b data-bidi>${esc(nb.join(', '))}</b></p>` : ''}
       ${nc.length ? `<p class="confirm-p">${esc(t('trk.newCols'))} <b data-bidi>${esc(nc.join(', '))}</b></p>` : ''}
+      ${nt.length ? `<p class="confirm-p">${esc(t('trk.newTypes'))} <b data-bidi>${esc(nt.join(', '))}</b></p>` : ''}
       ${(k=>k ? `<p class="confirm-p">${esc(tn('trk.kept', k))}</p>` : '')(plan.rows.reduce((n, r)=>n + (r.kept || 0), 0))}
       <p class="confirm-p muted-p">${esc(t('trk.keep'))}</p></div>
     <div class="m-foot"><span class="sp"></span><button class="btn subtle" data-act="close-modal">${esc(t('btn.cancel'))}</button><button class="btn primary" data-act="trk-apply">${esc(t('trk.apply'))}</button></div>`, 'confirm', 'narrow');
@@ -4176,6 +4182,16 @@ function applyTracker(){
     const b = {id:'b-'+uid(), name, key, color:PALETTE[S.boards.length % PALETTE.length][1], logo:null, seq:0, order, columns:COLS_PPC(), tc:TC}; order += 1000;
     S.boards.push(b); boardOfKey.set(k, b);
   }
+  if (plan.newTypes?.size){
+    const used = new Set(S.types.map(x=>x.color));
+    for (const name of plan.newTypes.values()){
+      if (trkType(name)) continue;
+      const color = (PALETTE.find(([, c])=>!used.has(c)) || PALETTE[S.types.length % PALETTE.length])[1]; used.add(color);
+      S.types.push({id:'t'+uid().replace(/[^A-Za-z0-9]/g, '').slice(0, 10), name, color, glyph:'dot'});
+    }
+    logAct('act.types', {d:[...plan.newTypes.values()].join(', ')});
+  }
+  const typeFor = r=>r.typeWord ? trkType(r.typeWord)?.id || null : null;
   const colFor = (b, word)=>{
     let c = trkColumn(b.columns, word); if (c) return c;
     if (!word) return b.columns[0];
@@ -4194,6 +4210,7 @@ function applyTracker(){
       const col = r.statusWord ? colFor(b, r.statusWord) : null;
       if (!trkChanged(i, {...r, colId:col?.id || null})) return;
       if (r.prio && TRK_PRIO_OUT[i.priority] !== TRK_PRIO_OUT[r.prio]) i.priority = r.prio;
+      { const tid = typeFor(r); if (tid && tid !== typeOf(i.type).id) i.type = tid; }
       if (col && col.id !== i.status){ const was = colOf(i); i.status = col.id; if (col.cat === 'done' && was?.cat !== 'done') i.doneAt = now; if (col.cat !== 'done') i.doneAt = null; }
       if (r.start) i.start = r.start;
       if (r.due) i.due = r.due;
@@ -4203,7 +4220,7 @@ function applyTracker(){
     } else {
       const col = colFor(b, r.statusWord);
       b.seq = Math.max(b.seq || 0, ...S.issues.filter(x=>x.boardId === b.id).map(x=>x.num)) + 1;
-      const i = normIssue('i-'+uid(), {boardId:b.id, num:b.seq, type:S.types[0]?.id, title:r.title, status:col.id, priority:r.prio || 'medium',
+      const i = normIssue('i-'+uid(), {boardId:b.id, num:b.seq, type:typeFor(r) || S.types[0]?.id, title:r.title, status:col.id, priority:r.prio || 'medium',
         start:r.start || today(), due:r.due || '', desc:r.notes || '', labels:[normLabel(b.name)], links:r.links.map(l=>({id:uid(), ...l})),
         created:now + ix, updated:now, doneAt:col.cat === 'done' ? now : null, creator:me(), history:[{id:uid(), at:now, text:t('trk.histNew', {sheet:plan.sheetName}), by:user.name}]});
       i.rank = undefined; S.issues.push(i); made++;
@@ -4221,11 +4238,12 @@ function exportTracker(){
   const rows = list.map(i=>{
     const b = boardOf(i), c = colOf(i), l = i.links[0];
     const docs = !i.links.length ? null : i.links.length === 1 ? {text:l.title || l.url, url:l.url} : {text:i.links.map(x=>x.title ? `${x.title} – ${x.url}` : x.url).join('\n'), url:l.url};
-    return {title:i.title, prio:TRK_PRIO_OUT[i.priority] || 'בינונית', client:b.alias || b.name, status:c ? statusWord(c) : '', start:i.start, due:i.due, docs, notes:i.desc};
+    return {title:i.title, cat:typeOf(i.type).name || '', prio:TRK_PRIO_OUT[i.priority] || 'בינונית', client:b.alias || b.name, status:c ? statusWord(c) : '', start:i.start, due:i.due, docs, notes:i.desc};
   });
+  const cats = [...new Set([...TRACKER.categories, ...rows.map(r=>r.cat).filter(Boolean)])];
   const clients = boards.map(b=>b.alias || b.name);
   const statuses = [...new Set([...TRACKER.statuses, ...boards.flatMap(b=>b.columns.map(statusWord))])];
-  const blob = writeTracker({rows, clients, statuses});
+  const blob = writeTracker({rows, clients, statuses, cats});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `task-tracker-${today()}.xlsx`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 1500);
   toast(tn('trk.exported', rows.length));
