@@ -88,7 +88,7 @@ function ago(ts){
   const m = Math.round(s/60); if (m < 60) return tn('ago.min', m);
   const h = Math.round(m/60); if (h < 24) return tn('ago.hour', h);
   const d = Math.round(h/24); if (d < 7) return d===1 ? t('ago.yesterday') : tn('ago.day', d);
-  return fmtTime(ts);
+  return fmtDay(iso(new Date(ts)));
 }
 function hl(s){
   const q = query.trim(); if (!q) return esc(s);
@@ -2429,8 +2429,8 @@ function ctxMenu(i){
     <div class="ctx-row" role="group" aria-label="${esc(t('f.priority'))}">${PRIOS.map(p=>`<button class="ctx-chip${p === i.priority ? ' on' : ''}" data-act="ctx-prio" data-p="${p}" aria-pressed="${p === i.priority}" title="${esc(prioName(p))}" aria-label="${esc(prioName(p))}">${prioIcon(p)}</button>`).join('')}</div>
     <div class="menu-h">${esc(t('f.due'))}${i.due ? ` <span class="ctx-cur">${esc(dueLabel(i))}</span>` : ''}</div>
     <div class="ctx-row">${dues.map(([k, d])=>`<button class="ctx-chip txt${(i.due || '') === d ? ' on' : ''}" data-act="ctx-due" data-d="${d}" aria-pressed="${(i.due || '') === d}">${esc(t('ctx.due.' + k))}</button>`).join('')}</div>
-    <div class="menu-h">${esc(t('f.platform'))}${i.color ? ` <span class="ctx-cur">${esc(platLabelOf(i.color))}</span>` : ''}</div>
-    <div class="ctx-row ctx-plat" role="group" aria-label="${esc(t('f.platform'))}"><button class="ctx-dot none${!i.color ? ' on' : ''}" data-act="set-color" data-c="" aria-pressed="${!i.color}" title="${esc(t('plat.none'))}" aria-label="${esc(t('plat.none'))}"></button>${[...PLATFORMS.map(([n, h])=>[platLabel(n), h]), ...EXTRA.map(([n, h])=>[colorName(h), h])].map(([label, h])=>`<button class="ctx-dot${i.color === h ? ' on' : ''}" style="--sw:${h}" data-act="set-color" data-c="${h}" aria-pressed="${i.color === h}" title="${esc(label)}" aria-label="${esc(label)}"></button>`).join('')}</div>
+    <div class="menu-h">${esc(t('f.platform'))} <span class="ctx-cur ctx-pcur" data-cur="${esc(i.color ? platLabelOf(i.color) : '')}">${esc(i.color ? platLabelOf(i.color) : '')}</span></div>
+    <div class="ctx-row ctx-plat" role="group" aria-label="${esc(t('f.platform'))}"><button class="ctx-dot none${!i.color ? ' on' : ''}" data-act="set-color" data-c="" aria-pressed="${!i.color}" title="${esc(t('plat.none'))}" aria-label="${esc(t('plat.none'))}"></button>${[...PLATFORMS.map(([n, h])=>[platLabel(n), h]), ...EXTRA.map(([n, h])=>[colorName(h), h, true])].map(([label, h, extra], k, arr)=>`${extra && !arr[k-1][2] ? '<span class="ctx-dsep" aria-hidden="true"></span>' : ''}<button class="ctx-dot${i.color === h ? ' on' : ''}" style="--sw:${h}" data-act="set-color" data-c="${h}" data-name="${esc(label)}" aria-pressed="${i.color === h}" title="${esc(label)}" aria-label="${esc(label)}"></button>`).join('')}</div>
     <div class="menu-sep"></div>
     ${copy}
     <button class="menu-i" role="menuitem" data-act="dup-issue">${I.plus}${esc(t('ctx.dup'))}</button>
@@ -2594,7 +2594,7 @@ function issueHTML(i){
         <div class="sec-head"><h3>${esc(t('f.links'))}</h3>${i.links.length ? `<span class="sec-meta">${i.links.length}</span>` : ''}</div>
         ${linksHTML(i, edit)}
         ${edit ? `<form class="link-add" data-form="link" novalidate>
-          <input class="inp" data-k="l-url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" dir="ltr" placeholder="${esc(t('links.ph'))}" aria-label="${esc(t('links.url'))}" autocomplete="off">
+          <input class="inp" data-k="l-url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" dir="auto" placeholder="${esc(t('links.ph'))}" aria-label="${esc(t('links.url'))}" autocomplete="off">
           <input class="inp" data-k="l-title" data-bidi placeholder="${esc(t('links.textPh'))}" aria-label="${esc(t('links.text'))}" autocomplete="off">
           <button class="btn">${esc(t('links.add'))}</button>
         </form>
@@ -3748,6 +3748,10 @@ layer.addEventListener('change', e=>{
   if (k === 'act-who'){ actView.who = e.target.value; actView.n = 120; actRefresh(); }
   if (k === 'act-board'){ actView.board = e.target.value; actView.n = 120; actRefresh(); }
 });
+
+/* quick menu: hovering a colour dot shows its name next to "פלטפורמה" */
+pop.addEventListener('pointerover', e=>{ const d = e.target.closest?.('.ctx-dot'); const cur = $('.ctx-pcur', pop); if (!cur) return; cur.textContent = d ? (d.dataset.name || d.title || '') : cur.dataset.cur; });
+pop.addEventListener('pointerleave', ()=>{ const cur = $('.ctx-pcur', pop); if (cur) cur.textContent = cur.dataset.cur; });
 
 /* double-click on an empty spot closes the side panel, if it is open */
 const DBL_SKIP = 'button,a,input,textarea,select,label,option,[contenteditable],[data-act],[role="button"],.card,tr,.cal-chip,.cal-day,.ds-day,.viz-card,.kpi,.side,#pop,#layer,.gsearch,.toast,.col-head,.ed-row';

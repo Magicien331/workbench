@@ -1742,3 +1742,10 @@ body.col-moving,body.col-moving *{cursor:grabbing!important;user-select:none!imp
   .act-sel{margin:0;width:100%}
   .act-sel .inp{flex:1;max-width:none}
 }
+
+/* small fixes from the guide review */
+.ed-row .btn:disabled{opacity:.28;cursor:default}
+.comp-hint{white-space:nowrap}
+.ctx-dsep{width:1px;align-self:stretch;margin:2px 3px;background:var(--border)}
+.pp-dd .pp-chip{max-width:100%}
+@media (min-width:900px){ .dash-pick{max-height:min(72vh,620px)} }
