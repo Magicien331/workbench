@@ -1775,7 +1775,7 @@ function dashStats(list, R){
 // a round top for the y axis, so the middle gridline is a whole number too
 const niceTop = max=>max <= 2 ? 2 : max <= 4 ? 4 : Math.ceil(max / 4) * 4;
 // "previous period: 4 (+50%)" — how this period compares with the same length of time just before it
-const trend = (now, prev)=>prev ? t('dash.vsPrevP', {n:prev, p:(now > prev ? '+' : now < prev ? '−' : '') + Math.round(Math.abs(now - prev) / prev * 100) + '%'}) : t('dash.vsPrev', {n:prev});
+const trend = (now, prev)=>prev ? t('dash.vsPrevP', {n:prev, p:'\u2066' + (now > prev ? '+' : now < prev ? '−' : '') + Math.round(Math.abs(now - prev) / prev * 100) + '%\u2069'}) : t('dash.vsPrev', {n:prev});
 const tile = (label, value, sub, cls='')=>`<div class="kpi ${cls}"><span class="kpi-l">${esc(label)}</span><b class="kpi-v">${value}</b>${sub ? `<span class="kpi-s">${sub}</span>` : ''}</div>`;
 const legend = items=>`<div class="viz-legend">${items.map(([cls, label])=>`<span><i class="sw ${cls}"></i>${esc(label)}</span>`).join('')}</div>`;
 function card(w, title, body, o={}){
