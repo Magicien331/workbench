@@ -919,7 +919,7 @@ function cardHTML(i){
       ${i.comments.length ? `<span class="meta-n" title="${esc(tn('card.comments', i.comments.length))}">${I.comment}${i.comments.length}</span>` : ''}
       ${i.links.length ? `<span class="meta-n" title="${esc(tn('card.links', i.links.length))}">${I.link}${i.links.length}</span>` : ''}
       ${(()=>{ const r = relIx.get(i.id); if (!r) return ''; const bl = !done && r.blockedBy.length;
-        return `<span class="meta-n${bl ? ' blk' : ''}" title="${esc(bl ? t('rel.blockedTip', {keys:r.blockedBy.map(key).join(', ')}) : tn('rel.cardTip', r.n))}">${bl ? I.block : I.rel}${r.n}</span>`; })()}
+        return `<span class="meta-n${bl ? ' blk' : ''}" title="${esc(bl ? t('rel.blockedTip', {keys:r.blockedBy.map(key).join(', ')}) : tn('rel.cardTip', r.n))}">${bl ? I.block : I.rel}${bl ? r.blockedBy.length : r.n}</span>`; })()}
       <span class="c-right">${i.points!=null ? `<span class="pts" title="${esc(t('f.points'))}">${esc(i.points)}</span>` : ''}${prioIcon(i.priority)}${isShared() || i.with ? creatorAv(i) : ''}</span>
     </div>
   </article>`;
