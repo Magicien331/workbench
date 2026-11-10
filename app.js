@@ -2,6 +2,7 @@ import { createStore, isConfigured } from './store.js';
 import { t, tn, getLang, setLang, locale, _dicts } from './i18n.js';
 import { writeXlsx, readXlsx, isoToSerial, msToSerial, serialToIso, ST, MAX_CELL } from './xlsx.js';
 import { writeTracker, TRACKER } from './tracker.js';
+import { createCampaigns } from './campaigns.js';
 
 /* ================= Constants ================= */
 const ALL = '*';
@@ -158,6 +159,7 @@ const I = {
   back:ic('<path d="M15 6l-6 6 6 6"/>'),
   repeat:ic('<path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/>'),
   chart:ic('<path d="M4 20V10M10 20V4M16 20v-7M21 20H3"/>'),
+  mega:ic('<path d="M3 11v2a1 1 0 0 0 1 1h2l1 5h2.5l-.8-5H10l8 4V6l-8 4H4a1 1 0 0 0-1 1z"/><path d="M21 10v4"/>'),
   sliders:ic('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
   eyeOff:ic('<path d="M3 3l18 18M10.6 6.1A8.8 8.8 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-2.9 3.5M6.6 6.7C4 8.4 2.5 12 2.5 12S6 18 12 18c1.7 0 3.2-.4 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'),
   sub:ic('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/><path d="M7.5 11v4.5A1.5 1.5 0 0 0 9 17h4"/>'),
@@ -242,7 +244,7 @@ const savePrefs = ()=>{ try { localStorage.setItem(PREF_KEY, JSON.stringify(P));
 /* ================= Session state ================= */
 let store = null, user = null, wsList = null, wsId = null, ws = null;
 let incoming = [], outgoing = [], mayCreate = true;
-let unsubWs = null, unsubData = null, unsubIn = null, unsubOut = null;
+let unsubWs = null, unsubData = null, unsubIn = null, unsubOut = null, unsubCamps = null;
 let S = {boards:[], issues:[], types:[], archive:null};
 // Monthly "archive what's done" prompt: shown from `day` of each month until handled (stored in the workspace settings)
 const normArchive = a=>({on:a?.on !== false, day:Math.min(28, Math.max(1, parseInt(a?.day, 10) || 1)), handled:/^\d{4}-\d{2}$/.test(a?.handled || '') ? a.handled : ''});
@@ -716,7 +718,7 @@ async function onAuth(u){
     const before = wsList;
     wsList = cleanWs(list).sort((a,b)=>(a.ownerUid===u.uid?0:1)-(b.ownerUid===u.uid?0:1) || String(a.name).localeCompare(String(b.name)));
     if (awaitOpen && wsList.some(w=>w.id===awaitOpen)){ const id = awaitOpen; awaitOpen = null; openWorkspace(id); return; }
-    if (wsId && !wsList.some(w=>w.id===wsId)){ toast(t('toast.lostAccess')); wsId = null; ws = null; unsubData?.(); unsubData = null; if (screen === 'app') screen = 'loading'; }
+    if (wsId && !wsList.some(w=>w.id===wsId)){ toast(t('toast.lostAccess')); wsId = null; ws = null; unsubData?.(); unsubData = null; unsubCamps?.(); unsubCamps = null; if (screen === 'app') screen = 'loading'; }
     if (screen === 'welcome' && before){
       const newOne = wsList.find(w=>!before.some(b=>b.id===w.id));
       if (newOne && !wsId){ openWorkspace(newOne.id); return; }
@@ -748,7 +750,10 @@ function openWorkspace(id, reload){
   if (!reload){ screen = 'loading'; renderLoading(t('gate.opening', {name:ws?.name||''})); }
   applyRole(); renderNavWs();
   unsubData = store.watchData(id, {boards:onBoards, issues:onIssues, meta:onMeta}, onDataErr);
+  unsubCamps?.(); Camp.setData([]);
+  unsubCamps = store.watchCampaigns ? store.watchCampaigns(id, onCamps, onListenErr) : null;
 }
+function onCamps(docs){ Camp.setData(docs); if (screen === 'app' && P.view === 'camps') scheduleRender(); }
 function applyRole(){
   document.body.classList.toggle('ro', !!ws && !canEdit());
   const chip = $('#roChip'); if (chip) chip.hidden = !ws || canEdit();
@@ -2024,10 +2029,13 @@ function render(){
   buildRelIx();
   const v = P.view, all = isAll(), b = curBoard(), name = all ? t('nav.allBoards') : (b?.name || ws?.name || '');
   board.hidden = v !== 'board'; listview.hidden = v !== 'list' && v !== 'archive'; sheetview.hidden = v !== 'table'; calview.hidden = v !== 'cal'; dashview.hidden = v !== 'dash';
-  const title = v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : v === 'table' ? t('view.tableOf', {name}) : v === 'cal' ? t('view.calOf', {name}) : v === 'dash' ? t('view.dashOf', {name}) : name;
+  campview.hidden = v !== 'camps'; $('.main').classList.toggle('v-camps', v === 'camps');
+  const title = v === 'camps' ? t('view.campsOf', {name}) : v === 'list' ? t('view.listOf', {name}) : v === 'archive' ? t('view.archiveOf', {name}) : v === 'table' ? t('view.tableOf', {name}) : v === 'cal' ? t('view.calOf', {name}) : v === 'dash' ? t('view.dashOf', {name}) : name;
   $('#viewTitle').innerHTML = `${!all && b && isImg(b.logo) ? `<span class="h1-logo"><img src="${esc(b.logo)}" alt=""></span>` : ''}<span data-bidi>${esc(title)}</span>`;
   $$('.side-item[data-view]').forEach(x=>x.classList.toggle('on', x.dataset.view===v));
   if (typeFilter && !S.types.some(x=>x.id===typeFilter)) typeFilter = null;
+  let campSum = null;
+  if (v === 'camps') campSum = Camp.render(); else
   if (v === 'board') renderBoard(); else if (v === 'table') renderSheet(); else if (v === 'cal') renderCal(); else if (v === 'dash') renderDash(); else renderList(v === 'archive');
   renderSide();
   if (modalKind === 'activity') actRefresh();
@@ -2035,6 +2043,7 @@ function render(){
   const over = open.filter(i=>i.due && i.due < tday).length;
   const arch = S.issues.filter(i=>i.archived && (all || (b && i.boardId===b.id))).length;
   $('#summary').textContent = v === 'archive' ? tn('summary.archived', arch) : pool.length ? tn('summary.open', open.length) + (over ? t('summary.overdueSuffix', {n:over}) : '') : '';
+  if (v === 'camps') $('#summary').textContent = campSum;
   $$('.qf[data-qf]').forEach(x=>x.setAttribute('aria-pressed', qf.has(x.dataset.qf)));
   const dir = peopleDir(), pf0 = $('#peopleF');
   [...peopleF].forEach(k=>{ if (k !== '-' && !dir.has(k)) peopleF.delete(k); });
@@ -3303,11 +3312,12 @@ function updateComment(ta){
 }
 
 /* ================= Global click actions ================= */
-const EDIT_ACTS = new Set(['trk-apply','cal-add','s-menu','s-set','ap-yes','ap-no','imp-add','imp-replace','new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
+const EDIT_ACTS = new Set(['cmp-new','cmp-move','cmp-stage','cmp-del','trk-apply','cal-add','s-menu','s-set','ap-yes','ap-no','imp-add','imp-replace','new-board','board-settings','del-board','types','create','add-inline','set-status','set-color','archive-issue','archive-col','restore','del-issue','clear-due','label-del','link-del','st-toggle','st-del','cmt-save','cmt-edit','cmt-del','cmt-update','import','status-menu']);
 document.addEventListener('click', async e=>{
   const b = e.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act;
   if (EDIT_ACTS.has(act) && screen === 'app' && !canEdit()){ toast(t('toast.viewOnly')); return; }
+  if (act.startsWith('cmp-')){ Camp.onClick(act, b, e); return; }
   const inPop = !!b.closest('#pop');
   const ctxId = inPop ? (b.dataset.id || pop.dataset.id) : (b.dataset.id || openId);
   const i = ctxId && get(ctxId);
@@ -4331,9 +4341,20 @@ function relocalize(){
   render();
 }
 
+/* ================= Campaigns (campaigns.js) ================= */
+const campview = $('#campview');
+const Camp = createCampaigns({
+  el:campview, esc, I, P, savePrefs, today, fmtDay, bAv, boardById, coarse, uid,
+  canEdit:()=>canEdit(), userName:()=>user?.name || '', boards:()=>S.boards.slice().sort((a, c)=>(a.order ?? 0) - (c.order ?? 0)),
+  scopeBoard:()=>isAll() ? null : curBoard(),
+  commit:ops=>store.commit(wsId, ops).catch(err=>{ console.error(err); toast(err?.code === 'permission-denied' ? t('toast.noPermission') : t('toast.saveFailed')); }),
+  head:(...a)=>head(...a), showModal:(...a)=>showModal(...a), closeModal:()=>closeModal(), openPop:(...a)=>openPop(...a), closePop:()=>closePop(),
+  toast:m=>toast(m), rerender:()=>scheduleRender()
+});
+
 /* ================= Init ================= */
 $$('[data-i]').forEach(el=>el.insertAdjacentHTML('afterbegin', I[el.dataset.i]));
-if (!['board','list','table','cal','dash','archive'].includes(P.view)) P.view = 'board';
+if (!['board','list','table','cal','dash','camps','archive'].includes(P.view)) P.view = 'board';
 setLang(getLang()); staticText(); setTheme(null); applyShell();
 renderLoading();
 setInterval(()=>{ if (screen === 'app' && !drag && !modalKind && !composer && !popAnchor) render(); }, 60000);
