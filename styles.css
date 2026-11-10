@@ -1760,6 +1760,11 @@ body.col-moving,body.col-moving *{cursor:grabbing!important;user-select:none!imp
 .cs-live{--sb:var(--l-done-bg);--sf:var(--l-done);--ss:#22A06B}
 .cs-paused{--sb:var(--warn-bg);--sf:var(--warn-text);--ss:#E2B203}
 .cs-done{--sb:var(--btn);--sf:var(--text-subtlest);--ss:#A1A9B6}
+/* did the campaign reach its target: the same three colours, always next to their words */
+.rs-open{--sb:var(--btn);--sf:var(--text-subtlest);--ss:#B3B9C4}
+.rs-yes{--sb:var(--l-done-bg);--sf:var(--l-done);--ss:#22A06B}
+.rs-no{--sb:var(--danger-bg);--sf:var(--danger-text);--ss:#C9372C}
+[data-tone="dark"] .rs-open{--ss:#596773}
 
 .main.v-camps .toolbar{display:none}
 .campview{flex:1;min-height:0;overflow:auto;padding:12px 32px 24px}
@@ -1772,23 +1777,31 @@ body.col-moving,body.col-moving *{cursor:grabbing!important;user-select:none!imp
 .cg-seg button[aria-pressed="true"]{background:var(--raised);color:var(--text);box-shadow:var(--shadow-btn)}
 .cg-plats{display:flex;gap:2px;flex-wrap:wrap}
 .cg-plats .qf{display:inline-flex;align-items:center;gap:6px;height:28px;font-size:13px}
-.cg-plat{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;color:var(--text-sub);min-width:0}
+.cg-plat{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;color:var(--text-sub);min-width:0;white-space:nowrap;flex:none}
 .cg-chip{display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:11px;background:var(--sb);color:var(--sf);font-size:12px;font-weight:600;white-space:nowrap}
 
-.cg-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.cg-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
 .cg-kpi{display:flex;flex-direction:column;gap:2px;padding:12px 16px;border-radius:var(--r-col);background:var(--raised);box-shadow:var(--shadow-raised);min-width:0}
 .cg-kpi b{font-size:22px;line-height:28px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cg-kpi span{font-size:12px;line-height:16px;color:var(--text-subtlest)}
 .cg-kpi.live b,.cg-kpi.good b{color:var(--ok)}
 .cg-kpi.bad b{color:var(--danger)}
-.cg-attn{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:var(--r-col);background:var(--warn-bg)}
-.cg-attn h3{display:flex;align-items:center;gap:6px;margin:0 4px 4px;font-size:13px;font-weight:700;color:var(--warn-text)}
-.cg-attn h3 .i{width:15px;height:15px}
+.cg-kpi.warn b{color:var(--l-wait)}
+.cg-kpi small{font-size:11px;line-height:15px;color:var(--text-subtlest);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cg-kpi.bad small{color:var(--danger-text);font-weight:600}
+.cg-attn{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:var(--r-col);background:var(--raised);box-shadow:var(--shadow-raised)}
+.cg-attn h3{display:flex;align-items:center;gap:6px;margin:0 4px 4px;font-size:13px;font-weight:700;color:var(--text)}
+.cg-attn h3 .i{width:15px;height:15px;color:var(--text-subtlest)}
 .cg-attn-i{display:flex;align-items:center;gap:10px;min-height:32px;padding:4px 6px;border:0;border-radius:var(--r-sm);background:transparent;color:var(--text);text-align:start;font-size:13px}
-.cg-attn-i:hover{background:color-mix(in srgb,var(--warn-text) 10%,transparent)}
+.cg-attn-i:hover{background:var(--hover)}
 .cg-attn-i b{font-weight:600;white-space:nowrap}
 .cg-attn-i .why{color:var(--text-sub);min-width:0}
-.cg-attn .cg-chip{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--sf) 30%,transparent)}
+.cg-attn-more{align-self:flex-start;margin:4px 2px 0}
+/* how pressing: wrong now, about to be, worth knowing. A word in a chip, the colour only backs it */
+.cg-lv{display:inline-flex;align-items:center;justify-content:center;flex:none;min-width:52px;height:22px;padding:0 8px;border-radius:var(--r-sm);font-size:12px;font-weight:700;white-space:nowrap}
+.cg-lv.l0{background:var(--danger-bg);color:var(--danger-text)}
+.cg-lv.l1{background:var(--l-wait-bg);color:var(--l-wait)}
+.cg-lv.l2{background:var(--btn);color:var(--text-sub)}
 
 .cg-board{display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding-bottom:8px;scroll-snap-type:x proximity}
 .cg-col{flex:1 0 216px;max-width:340px;display:flex;flex-direction:column;border-radius:var(--r-col);background:var(--col);transition:background .2s;scroll-snap-align:start}
@@ -1810,6 +1823,10 @@ body.col-moving,body.col-moving *{cursor:grabbing!important;user-select:none!imp
 @media (hover:none){.kc-move{opacity:.7}}
 .kc-name{margin:0;font-size:14px;line-height:20px;font-weight:600;color:var(--text);overflow-wrap:anywhere}
 .kc-client{font-size:12px;color:var(--text-subtlest);margin-top:-4px}
+.kc-obj{font-size:12px;color:var(--text-subtlest);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.kc-obj::before{content:"·";margin-inline-end:6px}
+.kc-target{font-size:12px;line-height:16px;color:var(--text-sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kc-foot .cg-chip{height:20px;padding:0 8px;font-size:11px}
 .kc-dates{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-sub)}
 .kc-dates .i{width:13px;height:13px;color:var(--text-subtlest)}
 .kc-prog{height:4px;border-radius:2px;background:var(--btn);overflow:hidden}
@@ -1853,6 +1870,49 @@ button.ct-label:hover{background:var(--raised-hover)}
 [dir="ltr"] .ct-bar.open{-webkit-mask-image:linear-gradient(to right,#000 70%,transparent);mask-image:linear-gradient(to right,#000 70%,transparent)}
 .ct-none{grid-column:1 / -1;padding:32px 16px}
 
+/* on air now, and the ended campaigns: plain tables on a panel */
+.cg-panel{border-radius:var(--r-col);background:var(--raised);box-shadow:var(--shadow-raised)}
+.cg-tbl-wrap{overflow-x:auto}
+.cg-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.cg-tbl caption{padding:12px 16px 4px;text-align:start;font-size:13px;font-weight:700;color:var(--text)}
+.cg-tbl th,.cg-tbl td{padding:9px 12px;text-align:start;vertical-align:middle;border-bottom:1px solid var(--border)}
+.cg-tbl thead th{position:sticky;top:0;font-size:12px;font-weight:600;color:var(--text-sub);white-space:nowrap;background:var(--raised)}
+.cg-tbl tbody th{font-weight:600;color:var(--text);min-width:150px}
+.cg-tbl td{color:var(--text-sub)}
+.cg-tbl .num{text-align:end;white-space:nowrap;font-variant-numeric:tabular-nums}
+.cg-tbl td.num{color:var(--text);font-weight:600}
+.cg-tbl .nw{white-space:nowrap}
+.cg-tbl .tgt{max-width:220px}
+.cg-tbl .aft{max-width:300px;min-width:160px}
+.cg-tbl .aft div{font-size:12px;line-height:17px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
+.cg-row{cursor:pointer}
+.cg-row:hover{background:var(--raised-hover)}
+.cg-row:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.cg-tbl tbody tr:last-child th,.cg-tbl tbody tr:last-child td{border-bottom:0}
+.cg-tbl tfoot th,.cg-tbl tfoot td{border-top:1px solid var(--border);border-bottom:0;font-weight:700;color:var(--text)}
+.cg-pr{display:flex;flex-direction:column;gap:4px;min-width:120px}
+
+/* how many succeeded: a bar per objective. Its length is the number of campaigns, its parts are told apart by the words next to it too */
+.cg-res{padding:14px 16px 16px}
+.rz-head{display:flex;align-items:baseline;gap:8px 12px;flex-wrap:wrap;margin-bottom:12px}
+.rz-head h3{margin:0;font-size:14px;font-weight:700;color:var(--text)}
+.rz-head > span{font-size:12px;color:var(--text-subtlest)}
+.rz-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text-sub)}
+.rz-legend span{display:inline-flex;align-items:center;gap:6px}
+.rz-legend i{width:10px;height:10px;border-radius:3px;background:var(--ss)}
+.rz-chart{display:grid;grid-template-columns:minmax(90px,max-content) minmax(120px,1fr) max-content;gap:8px 14px;align-items:center}
+.rz-row{display:contents}
+.rz-name{font-size:13px;color:var(--text-sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rz-row.all .rz-name{font-weight:700;color:var(--text)}
+.rz-track{min-width:0}
+.rz-bar{display:flex;gap:2px;height:14px;min-width:6px}
+.rz-row.all .rz-bar{height:18px}
+.rz-bar i{min-width:4px;background:var(--ss)}
+.rz-bar i:first-child{border-start-start-radius:4px;border-end-start-radius:4px}
+.rz-bar i:last-child{border-start-end-radius:4px;border-end-end-radius:4px}
+.rz-val{font-size:12px;color:var(--text-sub);white-space:nowrap}
+.rz-val b{color:var(--text);font-weight:700}
+
 /* the campaign dialog */
 .cg-form fieldset.fld{margin:0;padding:0;border:0}
 .cg-form legend{padding:0;margin-bottom:6px}
@@ -1863,13 +1923,14 @@ button.ct-label:hover{background:var(--raised-hover)}
 .cg-stage-row .cg-chip:has(input:checked){opacity:1;outline-color:var(--sf)}
 .cg-stage-row .cg-chip:has(input:focus-visible){box-shadow:var(--focus-ring)}
 .cg-stages small{margin-top:6px;font-size:12px;font-weight:400;color:var(--text-subtlest)}
-.cg-form input[name="platformOther"]{margin-top:6px}
+.cg-form input[name="platformOther"],.cg-form input[name="objectiveOther"]{margin-top:6px}
+.cg-after{padding-top:14px !important;border-top:1px solid var(--border) !important}
 .cg-link-row{display:flex;gap:6px;align-items:center}
 .cg-link-row input{flex:1;min-width:0}
 .m-foot .btn.armed{background:var(--danger);color:#fff}
 .menu-i .cg-chip{pointer-events:none}
 
-@media (max-width:1100px){ .cg-kpis{grid-template-columns:repeat(3,minmax(0,1fr))} }
+@media (max-width:1280px){ .cg-kpis{grid-template-columns:repeat(3,minmax(0,1fr))} }
 @media (max-width:760px){
   .campview{padding:8px 12px 20px}
   .cg-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
@@ -1878,4 +1939,8 @@ button.ct-label:hover{background:var(--raised-hover)}
   .cg-time{--lw:132px;max-height:none}
   .cg-attn-i{flex-wrap:wrap;gap:4px 8px}
   .cg-bar .btn.primary{order:-1;margin-inline-start:auto}
+  .cg-seg{width:100%} .cg-seg button{flex:1;justify-content:center;padding:0 6px}
+  .cg-tbl th,.cg-tbl td{padding:8px 10px}
+  .rz-chart{grid-template-columns:minmax(0,1fr);gap:3px} .rz-row{display:grid;grid-template-columns:minmax(0,1fr);gap:3px;margin-bottom:10px}
+  .rz-val{white-space:normal}
 }

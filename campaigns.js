@@ -1,26 +1,44 @@
 // Campaigns: what is being planned, set up, waiting for approval, running and ended, per client and platform.
-// A board with a column per stage, and a timeline. The same campaigns can be kept in a Google Sheets tab
-// ("קמפיינים"), which a script keeps in step with this screen.
+// A board with a column per stage, a timeline, a table of what is on air now, and how the ended campaigns did.
+// The same campaigns can be kept in a Google Sheets tab ("קמפיינים"), which a script keeps in step with this screen.
 // They are stored next to the workspace's settings, as small documents named "cmp_…".
 import { t, locale, _dicts } from './i18n.js';
 
 export const CAMP_STAGES = ['plan', 'setup', 'wait', 'ok', 'live', 'paused', 'done'];
 export const CAMP_PLATFORMS = [['Google Ads', '#1D7AFC'], ['Meta', '#8F7EE7'], ['TikTok', '#DA62AC'], ['Taboola', '#F38A3F'], ['ChatGPT', '#22A06B']];
+// the objectives are kept by the names the sheet uses
+export const CAMP_OBJECTIVES = ['מודעות', 'צפיות', 'תנועה לאתר', 'מעורבות', 'לידים', 'מכירות', 'התקנות'];
+export const CAMP_RESULTS = ['open', 'yes', 'no'];   // did it reach its target: not ended yet, yes, no
+const CAMP_MODES = ['board', 'time', 'live', 'res'];
 const OTHER_COLOR = '#8590A2';
 const CAMP_ID = /^cmp_[A-Za-z0-9]{1,40}$/;
-const DAYS = 70, DAY_W = 22, ENDED_SHOWN = 8;
+const DAYS = 70, DAY_W = 22, ENDED_SHOWN = 8, ATTN_SHOWN = 4;
 
 Object.assign(_dicts.he, {
   'side.camps':'קמפיינים', 'view.campsOf':'{name}: קמפיינים', 'cmp.new':'קמפיין חדש', 'cmp.edit':'עריכת קמפיין', 'cmp.one':'קמפיין',
-  'cmp.mode.board':'לוח', 'cmp.mode.time':'ציר זמן', 'cmp.mode':'תצוגה', 'cmp.all':'כל הפלטפורמות', 'cmp.platFilter':'סינון לפי פלטפורמה',
+  'cmp.mode.board':'לוח', 'cmp.mode.time':'ציר זמן', 'cmp.mode.live':'באוויר', 'cmp.mode.res':'תוצאות', 'cmp.mode':'תצוגה', 'cmp.all':'כל הפלטפורמות', 'cmp.platFilter':'סינון לפי פלטפורמה',
   'cmp.st.plan':'תכנון', 'cmp.st.setup':'בהקמה', 'cmp.st.wait':'ממתין לאישור', 'cmp.st.ok':'מאושר', 'cmp.st.live':'רץ', 'cmp.st.paused':'מושהה', 'cmp.st.done':'הסתיים',
   'cmp.f.name':'שם הקמפיין', 'cmp.f.client':'לקוח', 'cmp.f.platform':'פלטפורמה', 'cmp.f.stage':'שלב', 'cmp.f.start':'תאריך עלייה', 'cmp.f.end':'תאריך סיום',
-  'cmp.f.budget':'תקציב (₪)', 'cmp.f.link':'קישור (תוכנית מדיה, דוח…)', 'cmp.f.notes':'הערות', 'cmp.other':'אחר…', 'cmp.otherPh':'שם הפלטפורמה',
-  'cmp.k.live':'תקציב קמפיינים רצים', 'cmp.k.next':'תקציב בדרך', 'cmp.k.up':'עולים ב־7 הימים הקרובים', 'cmp.k.end':'מסתיימים ב־7 הימים הקרובים', 'cmp.k.attn':'דורשים תשומת לב',
+  'cmp.f.net':'תקציב נטו (₪)', 'cmp.f.gross':'תקציב ברוטו (₪)', 'cmp.f.link':'קישור (תוכנית מדיה, דוח…)', 'cmp.f.notes':'הערות', 'cmp.other':'אחר…', 'cmp.otherPh':'שם הפלטפורמה',
+  'cmp.f.objective':'אובייקטיב', 'cmp.objPh':'שם האובייקטיב', 'cmp.f.target':'יעד סופי', 'cmp.targetPh':'למשל: 500 לידים, ROAS 4', 'cmp.f.result':'הצלחנו?',
+  'cmp.f.after':'אחרי הקמפיין', 'cmp.afterPh':'סיכום, מסקנות ומה עושים הלאה', 'cmp.resultNote':'נשאר "עוד לא נגמר" עד שהקמפיין מסתיים. מהתשובות נבנה גרף ההצלחה.',
+  'cmp.o.0':'מודעות', 'cmp.o.1':'צפיות', 'cmp.o.2':'תנועה לאתר', 'cmp.o.3':'מעורבות', 'cmp.o.4':'לידים', 'cmp.o.5':'מכירות', 'cmp.o.6':'התקנות',
+  'cmp.r.open':'עוד לא נגמר', 'cmp.r.yes':'כן', 'cmp.r.no':'לא', 'cmp.rs.open':'עוד לא סומן', 'cmp.rs.yes':'הצליח', 'cmp.rs.no':'לא הצליח',
+  'cmp.k.live':'תקציב רץ · נטו', 'cmp.k.next':'תקציב בדרך · נטו', 'cmp.k.gross':'ברוטו {v}', 'cmp.k.up':'עולים ב־7 הימים הקרובים', 'cmp.k.end':'מסתיימים ב־7 הימים הקרובים',
+  'cmp.k.win':'אחוז הצלחה', 'cmp.k.winOf':'{a} מתוך {b} שסומנו', 'cmp.k.winNone':'עדיין אין תוצאות', 'cmp.k.attn':'דורשים תשומת לב', 'cmp.k.urgent':'{n} דחוף',
+  'cmp.lv.0':'דחוף', 'cmp.lv.1':'בקרוב', 'cmp.lv.2':'לידיעה', 'cmp.a.more':'הצגת כל {n}', 'cmp.a.less':'הצגת פחות',
   'cmp.h.today':'עולה היום', 'cmp.h.tomorrow':'עולה מחר', 'cmp.h.in':'עולה בעוד {n} ימים', 'cmp.h.late':'תאריך העלייה עבר', 'cmp.h.left':'נותרו {n} ימים', 'cmp.h.left1':'נותר יום אחד',
   'cmp.h.endsToday':'מסתיים היום', 'cmp.h.noEnd':'ללא תאריך סיום', 'cmp.h.ended':'הסתיים ב־{d}', 'cmp.h.noDates':'בלי תאריכים',
-  'cmp.a.title':'דורש תשומת לב', 'cmp.a.late':'תאריך העלייה ({d}) עבר, והקמפיין עדיין ב"{st}"', 'cmp.a.soon':'עולה בעוד {n} ימים ועדיין ממתין לאישור',
-  'cmp.a.soon0':'אמור לעלות היום ועדיין ממתין לאישור', 'cmp.a.noStart':'מאושר, אבל בלי תאריך עלייה', 'cmp.a.paused':'הקמפיין מושהה',
+  'cmp.a.title':'דורש תשומת לב', 'cmp.a.late':'תאריך העלייה ({d}) עבר, והקמפיין עדיין ב"{st}"', 'cmp.a.soon':'עולה בעוד {n} ימים ועדיין ב"{st}"',
+  'cmp.a.soon1':'עולה בעוד יום אחד ועדיין ב"{st}"', 'cmp.a.soon0':'אמור לעלות היום ועדיין ב"{st}"', 'cmp.a.noStart':'מאושר, אבל בלי תאריך עלייה', 'cmp.a.paused':'הקמפיין מושהה',
+  'cmp.a.pausedEnd':'מושהה, ותאריך הסיום ({d}) כבר עבר', 'cmp.a.grossLow':'התקציב ברוטו קטן מהנטו', 'cmp.a.ends':'מסתיים בעוד {n} ימים', 'cmp.a.ends1':'מסתיים בעוד יום אחד',
+  'cmp.a.ends0':'מסתיים היום', 'cmp.a.noResult':'הסתיים ב־{d}, ועוד לא סומן אם הצלחנו', 'cmp.a.noResult0':'הסתיים, ועוד לא סומן אם הצלחנו', 'cmp.a.lack':'חסר: {list}',
+  'cmp.a.noAfter':'הסתיים, וחסר סיכום ב"אחרי הקמפיין"', 'cmp.l.budget':'תקציב', 'cmp.l.platform':'פלטפורמה', 'cmp.l.objective':'אובייקטיב', 'cmp.l.target':'יעד סופי',
+  'cmp.c.campaign':'קמפיין', 'cmp.c.client':'לקוח', 'cmp.c.platform':'פלטפורמה', 'cmp.c.objective':'אובייקטיב', 'cmp.c.dates':'תאריכים', 'cmp.c.progress':'התקדמות',
+  'cmp.c.net':'נטו', 'cmp.c.gross':'ברוטו', 'cmp.c.target':'יעד סופי', 'cmp.c.result':'הצלחנו?', 'cmp.c.after':'אחרי הקמפיין', 'cmp.c.ended':'הסתיים',
+  'cmp.live.none':'אין קמפיינים באוויר כרגע', 'cmp.live.total':'סה״כ: {n} קמפיינים באוויר', 'cmp.target':'יעד: {v}', 'cmp.netGross':'נטו {n} · ברוטו {g}',
+  'cmp.res.title':'כמה קמפיינים הצליחו', 'cmp.res.sub':'מתוך הקמפיינים שהסתיימו, לפי אובייקטיב', 'cmp.res.all':'כל הקמפיינים', 'cmp.res.noObj':'ללא אובייקטיב',
+  'cmp.res.none':'עדיין אין קמפיינים שהסתיימו', 'cmp.res.line':'{y} הצליחו · {n} לא', 'cmp.res.open':'{o} לא סומנו', 'cmp.res.rate':'{p}% הצלחה', 'cmp.res.ended':'קמפיינים שהסתיימו',
   'cmp.empty':'עדיין אין קמפיינים', 'cmp.emptySub':'הוסיפו קמפיין כאן, או בלשונית "קמפיינים" בגיליון.', 'cmp.emptyCol':'אין קמפיינים בשלב הזה', 'cmp.noDated':'אין קמפיינים עם תאריכים בתקופה הזו',
   'cmp.moveTo':'העברה לשלב', 'cmp.del':'מחיקת הקמפיין', 'cmp.delSure':'ללחוץ שוב למחיקה', 'cmp.deleted':'הקמפיין נמחק', 'cmp.nameReq':'צריך שם לקמפיין',
   'cmp.datesBad':'תאריך הסיום מוקדם מתאריך העלייה', 'cmp.noClient':'ללא לקוח', 'cmp.showAll':'הצגת כל {n} שהסתיימו', 'cmp.sum':'{live} רצים · {wait} ממתינים לאישור',
@@ -28,15 +46,29 @@ Object.assign(_dicts.he, {
 });
 Object.assign(_dicts.en, {
   'side.camps':'Campaigns', 'view.campsOf':'{name}: campaigns', 'cmp.new':'New campaign', 'cmp.edit':'Edit campaign', 'cmp.one':'Campaign',
-  'cmp.mode.board':'Board', 'cmp.mode.time':'Timeline', 'cmp.mode':'View', 'cmp.all':'All platforms', 'cmp.platFilter':'Filter by platform',
+  'cmp.mode.board':'Board', 'cmp.mode.time':'Timeline', 'cmp.mode.live':'On air', 'cmp.mode.res':'Results', 'cmp.mode':'View', 'cmp.all':'All platforms', 'cmp.platFilter':'Filter by platform',
   'cmp.st.plan':'Planning', 'cmp.st.setup':'Setting up', 'cmp.st.wait':'Waiting for approval', 'cmp.st.ok':'Approved', 'cmp.st.live':'Running', 'cmp.st.paused':'Paused', 'cmp.st.done':'Ended',
   'cmp.f.name':'Campaign name', 'cmp.f.client':'Client', 'cmp.f.platform':'Platform', 'cmp.f.stage':'Stage', 'cmp.f.start':'Launch date', 'cmp.f.end':'End date',
-  'cmp.f.budget':'Budget (₪)', 'cmp.f.link':'Link (media plan, report…)', 'cmp.f.notes':'Notes', 'cmp.other':'Other…', 'cmp.otherPh':'Platform name',
-  'cmp.k.live':'Budget of running campaigns', 'cmp.k.next':'Budget on the way', 'cmp.k.up':'Launching in the next 7 days', 'cmp.k.end':'Ending in the next 7 days', 'cmp.k.attn':'Need attention',
+  'cmp.f.net':'Net budget (₪)', 'cmp.f.gross':'Gross budget (₪)', 'cmp.f.link':'Link (media plan, report…)', 'cmp.f.notes':'Notes', 'cmp.other':'Other…', 'cmp.otherPh':'Platform name',
+  'cmp.f.objective':'Objective', 'cmp.objPh':'Objective name', 'cmp.f.target':'Final target', 'cmp.targetPh':'For example: 500 leads, ROAS 4', 'cmp.f.result':'Did it succeed?',
+  'cmp.f.after':'After the campaign', 'cmp.afterPh':'Summary, conclusions and what comes next', 'cmp.resultNote':'Stays “Not ended yet” until the campaign ends. The success chart is built from the answers.',
+  'cmp.o.0':'Awareness', 'cmp.o.1':'Views', 'cmp.o.2':'Traffic', 'cmp.o.3':'Engagement', 'cmp.o.4':'Leads', 'cmp.o.5':'Sales', 'cmp.o.6':'Installs',
+  'cmp.r.open':'Not ended yet', 'cmp.r.yes':'Yes', 'cmp.r.no':'No', 'cmp.rs.open':'Not marked yet', 'cmp.rs.yes':'Succeeded', 'cmp.rs.no':'Did not succeed',
+  'cmp.k.live':'Running budget · net', 'cmp.k.next':'Budget on the way · net', 'cmp.k.gross':'Gross {v}', 'cmp.k.up':'Launching in the next 7 days', 'cmp.k.end':'Ending in the next 7 days',
+  'cmp.k.win':'Success rate', 'cmp.k.winOf':'{a} of {b} marked', 'cmp.k.winNone':'No results yet', 'cmp.k.attn':'Need attention', 'cmp.k.urgent':'{n} urgent',
+  'cmp.lv.0':'Urgent', 'cmp.lv.1':'Soon', 'cmp.lv.2':'Note', 'cmp.a.more':'Show all {n}', 'cmp.a.less':'Show fewer',
   'cmp.h.today':'Launches today', 'cmp.h.tomorrow':'Launches tomorrow', 'cmp.h.in':'Launches in {n} days', 'cmp.h.late':'Launch date has passed', 'cmp.h.left':'{n} days left', 'cmp.h.left1':'1 day left',
   'cmp.h.endsToday':'Ends today', 'cmp.h.noEnd':'No end date', 'cmp.h.ended':'Ended {d}', 'cmp.h.noDates':'No dates',
-  'cmp.a.title':'Needs attention', 'cmp.a.late':'The launch date ({d}) has passed and the campaign is still “{st}”', 'cmp.a.soon':'Launches in {n} days and is still waiting for approval',
-  'cmp.a.soon0':'Should launch today and is still waiting for approval', 'cmp.a.noStart':'Approved, but has no launch date', 'cmp.a.paused':'The campaign is paused',
+  'cmp.a.title':'Needs attention', 'cmp.a.late':'The launch date ({d}) has passed and the campaign is still “{st}”', 'cmp.a.soon':'Launches in {n} days and is still “{st}”',
+  'cmp.a.soon1':'Launches tomorrow and is still “{st}”', 'cmp.a.soon0':'Should launch today and is still “{st}”', 'cmp.a.noStart':'Approved, but has no launch date', 'cmp.a.paused':'The campaign is paused',
+  'cmp.a.pausedEnd':'Paused, and its end date ({d}) has passed', 'cmp.a.grossLow':'The gross budget is lower than the net', 'cmp.a.ends':'Ends in {n} days', 'cmp.a.ends1':'Ends tomorrow',
+  'cmp.a.ends0':'Ends today', 'cmp.a.noResult':'Ended {d}, and not marked yet as succeeded or not', 'cmp.a.noResult0':'Ended, and not marked yet as succeeded or not', 'cmp.a.lack':'Missing: {list}',
+  'cmp.a.noAfter':'Ended, and “After the campaign” has no summary', 'cmp.l.budget':'budget', 'cmp.l.platform':'platform', 'cmp.l.objective':'objective', 'cmp.l.target':'final target',
+  'cmp.c.campaign':'Campaign', 'cmp.c.client':'Client', 'cmp.c.platform':'Platform', 'cmp.c.objective':'Objective', 'cmp.c.dates':'Dates', 'cmp.c.progress':'Progress',
+  'cmp.c.net':'Net', 'cmp.c.gross':'Gross', 'cmp.c.target':'Final target', 'cmp.c.result':'Succeeded?', 'cmp.c.after':'After the campaign', 'cmp.c.ended':'Ended',
+  'cmp.live.none':'No campaigns on air right now', 'cmp.live.total':'Total: {n} campaigns on air', 'cmp.target':'Target: {v}', 'cmp.netGross':'Net {n} · gross {g}',
+  'cmp.res.title':'How many campaigns succeeded', 'cmp.res.sub':'Of the campaigns that ended, by objective', 'cmp.res.all':'All campaigns', 'cmp.res.noObj':'No objective',
+  'cmp.res.none':'No campaigns have ended yet', 'cmp.res.line':'{y} succeeded · {n} did not', 'cmp.res.open':'{o} not marked', 'cmp.res.rate':'{p}% success', 'cmp.res.ended':'Ended campaigns',
   'cmp.empty':'No campaigns yet', 'cmp.emptySub':'Add a campaign here, or in the “קמפיינים” tab of the sheet.', 'cmp.emptyCol':'No campaigns in this stage', 'cmp.noDated':'No campaigns with dates in this period',
   'cmp.moveTo':'Move to stage', 'cmp.del':'Delete campaign', 'cmp.delSure':'Click again to delete', 'cmp.deleted':'Campaign deleted', 'cmp.nameReq':'The campaign needs a name',
   'cmp.datesBad':'The end date is before the launch date', 'cmp.noClient':'No client', 'cmp.showAll':'Show all {n} ended', 'cmp.sum':'{live} running · {wait} waiting for approval',
@@ -50,7 +82,12 @@ const addDays = (d, n)=>{ const x = new Date(utc(d) + n * 864e5); return `${x.ge
 const dayDiff = (a, b)=>Math.round((utc(b) - utc(a)) / 864e5);
 const clean = s=>String(s ?? '').replace(/\s+/g, ' ').trim();
 export const platColor = name=>(CAMP_PLATFORMS.find(p=>p[0] === name) || [0, OTHER_COLOR])[1];
-const budgetOf = c=>typeof c.budget === 'number' && isFinite(c.budget) && c.budget >= 0 ? c.budget : null;
+const num = v=>typeof v === 'number' && isFinite(v) && v >= 0 ? v : null;
+export const netOf = c=>num(c.net) ?? num(c.budget);   // "budget" is what the net budget was called at first
+export const grossOf = c=>num(c.gross);
+export const resultOf = c=>CAMP_RESULTS.includes(c.result) ? c.result : 'open';
+const objLabel = name=>{ const i = CAMP_OBJECTIVES.indexOf(name); return i >= 0 ? t('cmp.o.' + i) : name; };
+const dm = d=>Number(d.slice(8)) + '/' + Number(d.slice(5, 7));
 function normLink(u){
   let s = String(u || '').trim(); if (!s) return '';
   if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) s = 'https://' + s;
@@ -64,27 +101,41 @@ export function stageNow(c, today){
   if (st === 'live' && isISO(c.end) && c.end < today) st = 'done';
   return st;
 }
-// what needs a look, most urgent first: [campaign, why]
+// Every campaign that needs a look, most urgent first: [campaign, what to check, level]. Level 0 = wrong now, 1 = about
+// to be, 2 = worth knowing. The same rules draw the "דורש תשומת לב" table of the sheet's dashboard.
 export function attention(list, today){
   const out = [];
   list.forEach(c=>{
-    const st = c.stage, s = isISO(c.start) ? c.start : '';
-    if (['plan', 'setup', 'wait'].includes(st) && s && s < today) out.push([c, t('cmp.a.late', {d:s.slice(8) * 1 + '/' + s.slice(5, 7) * 1, st:t('cmp.st.' + st)}), 0]);
-    else if (st === 'wait' && s && dayDiff(today, s) <= 3) out.push([c, dayDiff(today, s) === 0 ? t('cmp.a.soon0') : t('cmp.a.soon', {n:dayDiff(today, s)}), 1]);
-    else if (st === 'ok' && !s) out.push([c, t('cmp.a.noStart'), 2]);
-    else if (st === 'paused') out.push([c, t('cmp.a.paused'), 3]);
+    const st = c.stage, s = isISO(c.start) ? c.start : '', e = isISO(c.end) ? c.end : '', pts = [], stName = t('cmp.st.' + st);
+    const before = ['plan', 'setup', 'wait'].includes(st), toS = s ? dayDiff(today, s) : null, toE = e ? dayDiff(today, e) : null, net = netOf(c), gross = grossOf(c);
+    if (before && s && toS < 0) pts.push([0, t('cmp.a.late', {d:dm(s), st:stName})]);
+    if (st === 'paused' && e && toE < 0) pts.push([0, t('cmp.a.pausedEnd', {d:dm(e)})]);
+    if (net !== null && gross !== null && gross < net) pts.push([0, t('cmp.a.grossLow')]);
+    if (before && s && toS >= 0 && toS <= 3) pts.push([1, t(toS === 0 ? 'cmp.a.soon0' : toS === 1 ? 'cmp.a.soon1' : 'cmp.a.soon', {n:toS, st:stName})]);
+    if (st === 'ok' && !s) pts.push([1, t('cmp.a.noStart')]);
+    if (st === 'live' && e && toE >= 0 && toE <= 3) pts.push([1, t(toE === 0 ? 'cmp.a.ends0' : toE === 1 ? 'cmp.a.ends1' : 'cmp.a.ends', {n:toE})]);
+    if (st === 'done' && resultOf(c) === 'open') pts.push([1, e ? t('cmp.a.noResult', {d:dm(e)}) : t('cmp.a.noResult0')]);
+    const lack = [];
+    if ((st === 'ok' || st === 'live') && net === null && gross === null) lack.push('budget');
+    if (['wait', 'ok', 'live'].includes(st)) ['platform', 'objective', 'target'].forEach(k=>{ if (!clean(c[k])) lack.push(k); });
+    if (lack.length) pts.push([lack[0] === 'budget' ? 1 : 2, t('cmp.a.lack', {list:lack.map(k=>t('cmp.l.' + k)).join(', ')})]);
+    if (st === 'paused' && !(e && toE < 0)) pts.push([2, t('cmp.a.paused')]);
+    if (st === 'done' && resultOf(c) !== 'open' && !String(c.after || '').trim() && e && dayDiff(e, today) <= 30) pts.push([2, t('cmp.a.noAfter')]);
+    if (!pts.length) return;
+    pts.sort((x, y)=>x[0] - y[0]);
+    out.push([c, pts.slice(0, 2).map(p=>p[1]).join(' · ') + (pts.length > 2 ? ` (+${pts.length - 2})` : ''), pts[0][0]]);
   });
-  return out.sort((a, b)=>a[2] - b[2] || String(a[0].start || '').localeCompare(String(b[0].start || '')));
+  return out.sort((a, b)=>a[2] - b[2] || String(a[0].start || '9').localeCompare(String(b[0].start || '9')) || clean(a[0].name).localeCompare(clean(b[0].name)));
 }
 
 export function createCampaigns(api){
   const { el, esc, I, P, savePrefs } = api;
-  let all = [], showEnded = false, dragId = null;
+  let all = [], showEnded = false, showAttn = false, dragId = null;
   const fixed = new Set();
   const money = n=>new Intl.NumberFormat(locale(), {style:'currency', currency:'ILS', maximumFractionDigits:0}).format(n);
-  const sum = arr=>arr.reduce((s, c)=>s + (budgetOf(c) || 0), 0);
+  const sum = arr=>arr.reduce((s, c)=>s + (netOf(c) || 0), 0), sumGross = arr=>arr.reduce((s, c)=>s + (grossOf(c) || 0), 0);
   const get = id=>all.find(c=>c.id === id);
-  const mode = ()=>P.campMode === 'time' ? 'time' : 'board';
+  const mode = ()=>CAMP_MODES.includes(P.campMode) ? P.campMode : 'board';
 
   // what the server sent. The stage shown is the one the dates give; someone who can edit also saves it
   function setData(docs){
@@ -110,6 +161,15 @@ export function createCampaigns(api){
 
   /* ---------- pieces ---------- */
   const platChip = name=>name ? `<span class="cg-plat"><i class="pf-dot" style="--sw:${platColor(name)}"></i><span data-bidi>${esc(name)}</span></span>` : '';
+  const resChip = c=>`<span class="cg-chip rs-${resultOf(c)}">${esc(t('cmp.rs.' + resultOf(c)))}</span>`;
+  const budgetTip = c=>grossOf(c) !== null && netOf(c) !== null ? t('cmp.netGross', {n:money(netOf(c)), g:money(grossOf(c))}) : '';
+  // how far a running campaign is: its share of days gone, and what is left
+  function progress(c, today){
+    const s = isISO(c.start) ? c.start : '', e = isISO(c.end) ? c.end : '';
+    if (!s || !e || e < s) return '';
+    const pct = Math.max(4, Math.min(100, Math.round((dayDiff(s, today) + 1) / (dayDiff(s, e) + 1) * 100)));
+    return `<div class="kc-prog" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>`;
+  }
   function hint(c, today){
     const s = isISO(c.start) ? c.start : '', e = isISO(c.end) ? c.end : '', st = c.stage;
     if (st === 'done') return [e ? t('cmp.h.ended', {d:api.fmtDay(e)}) : '', ''];
@@ -125,21 +185,17 @@ export function createCampaigns(api){
     return [n === 0 ? t('cmp.h.today') : n === 1 ? t('cmp.h.tomorrow') : t('cmp.h.in', {n}), n <= 3 ? 'warn' : ''];
   }
   function card(c, today, showClient){
-    const s = isISO(c.start) ? c.start : '', e = isISO(c.end) ? c.end : '', b = api.boardById(c.boardId), [h, hc] = hint(c, today), bud = budgetOf(c);
-    let prog = '';
-    if (c.stage === 'live' && s && e && e >= s){
-      const pct = Math.max(4, Math.min(100, Math.round((dayDiff(s, today) + 1) / (dayDiff(s, e) + 1) * 100)));
-      prog = `<div class="kc-prog" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>`;
-    }
+    const s = isISO(c.start) ? c.start : '', e = isISO(c.end) ? c.end : '', b = api.boardById(c.boardId), [h, hc] = hint(c, today), bud = netOf(c), obj = clean(c.objective), tgt = clean(c.target);
+    const prog = c.stage === 'live' ? progress(c, today) : '';
     const dates = s || e ? `<div class="kc-dates">${I.cal}<span>${esc(s ? api.fmtDay(s) : '?')}${e ? ' – ' + esc(api.fmtDay(e)) : ''}</span></div>` : '';
     return `<article class="cg-card cs-${c.stage}" data-act="cmp-open" data-id="${c.id}" tabindex="0" role="button"${api.canEdit() ? ' draggable="true"' : ''}>
-      <div class="kc-top">${platChip(clean(c.platform))}<span class="sp"></span>
+      <div class="kc-top">${platChip(clean(c.platform))}${obj ? `<span class="kc-obj" data-bidi>${esc(objLabel(obj))}</span>` : ''}<span class="sp"></span>
         ${c.link ? `<a class="kc-link" href="${esc(c.link)}" target="_blank" rel="noopener noreferrer" title="${esc(t('cmp.openLink'))}" aria-label="${esc(t('cmp.openLink'))}">${I.link}</a>` : ''}${showClient && b ? api.bAv(b) : ''}
         ${api.canEdit() ? `<button class="btn icon subtle sm kc-move" data-act="cmp-move" data-id="${c.id}" aria-haspopup="menu" aria-label="${esc(t('cmp.moveTo'))}" title="${esc(t('cmp.moveTo'))}">${I.more}</button>` : ''}</div>
       <h3 class="kc-name"><bdi>${esc(c.name)}</bdi></h3>
       ${showClient && b ? `<div class="kc-client" data-bidi>${esc(b.name)}</div>` : ''}
-      ${dates}${prog}
-      <div class="kc-foot"><span class="kc-hint ${hc}">${esc(h)}</span><span class="sp"></span>${bud !== null ? `<b class="kc-budget">${esc(money(bud))}</b>` : ''}</div>
+      ${dates}${prog}${tgt ? `<div class="kc-target" data-bidi title="${esc(tgt)}">${esc(t('cmp.target', {v:tgt}))}</div>` : ''}
+      <div class="kc-foot"><span class="kc-hint ${hc}">${esc(h)}</span><span class="sp"></span>${c.stage === 'done' ? resChip(c) : ''}${bud !== null ? `<b class="kc-budget" title="${esc(budgetTip(c))}">${esc(money(bud))}</b>` : ''}</div>
     </article>`;
   }
   function bar(){
@@ -147,7 +203,7 @@ export function createCampaigns(api){
     const plats = [...CAMP_PLATFORMS.map(p=>p[0]), ...used.filter(n=>!CAMP_PLATFORMS.some(p=>p[0] === n)).sort()];
     if (P.campPlat && !plats.includes(P.campPlat)) P.campPlat = '';
     return `<div class="cg-bar">
-      <div class="cg-seg" role="group" aria-label="${esc(t('cmp.mode'))}">${['board', 'time'].map(m=>`<button data-act="cmp-mode" data-m="${m}" aria-pressed="${mode() === m}">${m === 'board' ? I.board : I.chart}${esc(t('cmp.mode.' + m))}</button>`).join('')}</div>
+      <div class="cg-seg" role="group" aria-label="${esc(t('cmp.mode'))}">${CAMP_MODES.map(m=>`<button data-act="cmp-mode" data-m="${m}" aria-pressed="${mode() === m}">${{board:I.board, time:I.chart, live:I.mega, res:I.check}[m]}${esc(t('cmp.mode.' + m))}</button>`).join('')}</div>
       <div class="cg-plats" role="group" aria-label="${esc(t('cmp.platFilter'))}">
         <button class="qf" data-act="cmp-plat" data-p="" aria-pressed="${!P.campPlat}">${esc(t('cmp.all'))}</button>
         ${plats.map(n=>`<button class="qf" data-act="cmp-plat" data-p="${esc(n)}" aria-pressed="${P.campPlat === n}"><i class="pf-dot" style="--sw:${platColor(n)}"></i><span data-bidi>${esc(n)}</span></button>`).join('')}
@@ -156,18 +212,22 @@ export function createCampaigns(api){
     </div>`;
   }
   function kpis(list, today, attn){
-    const in7 = addDays(today, 7), by = st=>list.filter(c=>c.stage === st);
+    const in7 = addDays(today, 7), by = st=>list.filter(c=>c.stage === st), live = by('live');
     const before = list.filter(c=>['plan', 'setup', 'wait', 'ok'].includes(c.stage));
+    const marked = by('done').filter(c=>resultOf(c) !== 'open'), won = marked.filter(c=>resultOf(c) === 'yes'), urgent = attn.filter(a=>a[2] === 0).length;
+    const gross = arr=>sumGross(arr) ? t('cmp.k.gross', {v:money(sumGross(arr))}) : '';
     const tiles = [
-      [money(sum(by('live'))), t('cmp.k.live'), 'live'],
-      [money(sum(before)), t('cmp.k.next'), ''],
-      [before.filter(c=>isISO(c.start) && c.start >= today && c.start <= in7).length, t('cmp.k.up'), ''],
-      [by('live').filter(c=>isISO(c.end) && c.end >= today && c.end <= in7).length, t('cmp.k.end'), ''],
-      [attn.length, t('cmp.k.attn'), attn.length ? 'bad' : 'good']
+      [money(sum(live)), t('cmp.k.live'), 'live', gross(live)],
+      [money(sum(before)), t('cmp.k.next'), '', gross(before)],
+      [before.filter(c=>isISO(c.start) && c.start >= today && c.start <= in7).length, t('cmp.k.up'), '', ''],
+      [live.filter(c=>isISO(c.end) && c.end >= today && c.end <= in7).length, t('cmp.k.end'), '', ''],
+      [marked.length ? Math.round(won.length / marked.length * 100) + '%' : '—', t('cmp.k.win'), '', marked.length ? t('cmp.k.winOf', {a:won.length, b:marked.length}) : t('cmp.k.winNone')],
+      [attn.length, t('cmp.k.attn'), attn.length ? (urgent ? 'bad' : 'warn') : 'good', urgent ? t('cmp.k.urgent', {n:urgent}) : '']
     ];
-    return `<div class="cg-kpis">${tiles.map(([v, l, k])=>`<div class="cg-kpi ${k}"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('')}</div>` +
-      (attn.length ? `<div class="cg-attn"><h3>${I.clock}${esc(t('cmp.a.title'))}</h3>${attn.map(([c, why])=>`<button class="cg-attn-i" data-act="cmp-open" data-id="${c.id}">
-        <span class="cg-chip cs-${c.stage}">${esc(t('cmp.st.' + c.stage))}</span><b><bdi>${esc(c.name)}</bdi></b><span class="why">${esc(why)}</span></button>`).join('')}</div>` : '');
+    return `<div class="cg-kpis">${tiles.map(([v, l, k, sub])=>`<div class="cg-kpi ${k}"><b>${esc(v)}</b><span>${esc(l)}</span>${sub ? `<small>${esc(sub)}</small>` : ''}</div>`).join('')}</div>` +
+      (attn.length ? `<div class="cg-attn"><h3>${I.clock}${esc(t('cmp.a.title'))}<span class="cg-n">${attn.length}</span></h3>${(showAttn ? attn : attn.slice(0, ATTN_SHOWN)).map(([c, why, lv])=>`<button class="cg-attn-i" data-act="cmp-open" data-id="${c.id}">
+        <span class="cg-lv l${lv}">${esc(t('cmp.lv.' + lv))}</span><b><bdi>${esc(c.name)}</bdi></b><span class="cg-chip cs-${c.stage}">${esc(t('cmp.st.' + c.stage))}</span><span class="why">${esc(why)}</span></button>`).join('')}
+        ${attn.length > ATTN_SHOWN ? `<button class="btn subtle sm cg-attn-more" data-act="cmp-attn" aria-expanded="${showAttn}">${esc(showAttn ? t('cmp.a.less') : t('cmp.a.more', {n:attn.length}))}</button>` : ''}</div>` : '');
   }
   function boardView(list, today, showClient){
     const sortUp = (a, b)=>String(a.start || '9').localeCompare(String(b.start || '9')) || a.name.localeCompare(b.name);
@@ -199,13 +259,62 @@ export function createCampaigns(api){
       const sub = [showClient && b ? b.name : '', clean(c.platform)].filter(Boolean).join(' · ');
       return `<button class="ct-label" data-act="cmp-open" data-id="${c.id}"><b><bdi>${esc(c.name)}</bdi></b><small><i class="pf-dot" style="--sw:${platColor(clean(c.platform))}"></i><span data-bidi>${esc(sub)}</span></small></button>
         <div class="ct-track"><button class="ct-bar cs-${c.stage}${e ? '' : ' open'}${dayDiff(d0, s) < 0 ? ' cut' : ''}" data-act="cmp-open" data-id="${c.id}" style="--a:${a};--n:${z - a + 1}"
-          title="${esc(c.name + ' · ' + t('cmp.st.' + c.stage) + ' · ' + api.fmtDay(s) + (e ? ' – ' + api.fmtDay(e) : ''))}"><span data-bidi>${esc(t('cmp.st.' + c.stage))}${budgetOf(c) !== null ? ' · ' + esc(money(budgetOf(c))) : ''}</span></button></div>`;
+          title="${esc(c.name + ' · ' + t('cmp.st.' + c.stage) + ' · ' + api.fmtDay(s) + (e ? ' – ' + api.fmtDay(e) : '') + (budgetTip(c) ? ' · ' + budgetTip(c) : ''))}"><span>${esc(dm(s) + (e && e !== s ? ' – ' + dm(e) : ''))} · ${esc(t('cmp.st.' + c.stage))}${netOf(c) !== null ? ' · ' + esc(money(netOf(c))) : ''}</span></button></div>`;
     }).join('');
     return `<div class="cg-time" style="--d:${DAY_W}px;--days:${DAYS};--today:${tIx}">
       <div class="ct-label ct-corner">${esc(t('cmp.one'))}</div>
       <div class="ct-head"><div class="ct-weeks">${weeks}</div><div class="ct-days">${days}</div></div>
       ${body || `<p class="empty-hint ct-none">${esc(t('cmp.noDated'))}</p>`}
     </div>`;
+  }
+
+  // on air now: only what is running, the soonest to end first
+  function liveView(list, today, showClient){
+    const rows = list.filter(c=>c.stage === 'live').sort((a, b)=>String(a.end || '9').localeCompare(String(b.end || '9')) || a.name.localeCompare(b.name));
+    if (!rows.length) return `<div class="cg-panel"><p class="empty-hint">${esc(t('cmp.live.none'))}</p></div>`;
+    const heads = ['campaign', showClient ? 'client' : '', 'platform', 'objective', 'dates', 'progress', 'net', 'gross', 'target'].filter(Boolean);
+    return `<div class="cg-panel cg-tbl-wrap"><table class="cg-tbl">
+      <thead><tr>${heads.map(h=>`<th scope="col" class="${h === 'net' || h === 'gross' ? 'num' : ''}">${esc(t('cmp.c.' + h))}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(c=>{
+        const s = isISO(c.start) ? c.start : '', e = isISO(c.end) ? c.end : '', b = api.boardById(c.boardId), [h, hc] = hint(c, today);
+        return `<tr class="cg-row cs-live" data-act="cmp-open" data-id="${c.id}" tabindex="0">
+          <th scope="row"><bdi>${esc(c.name)}</bdi></th>${showClient ? `<td data-bidi>${esc(b ? b.name : '')}</td>` : ''}
+          <td>${platChip(clean(c.platform))}</td><td data-bidi>${esc(objLabel(clean(c.objective)))}</td>
+          <td class="nw">${esc(s ? dm(s) : '?')} – ${esc(e ? dm(e) : '…')}</td>
+          <td><div class="cg-pr">${progress(c, today)}<span class="kc-hint ${hc}">${esc(h)}</span></div></td>
+          <td class="num">${netOf(c) !== null ? esc(money(netOf(c))) : ''}</td><td class="num">${grossOf(c) !== null ? esc(money(grossOf(c))) : ''}</td>
+          <td class="tgt" data-bidi>${esc(clean(c.target))}</td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><th scope="row" colspan="${heads.length - 3}">${esc(t('cmp.live.total', {n:rows.length}))}</th><td class="num">${esc(money(sum(rows)))}</td><td class="num">${sumGross(rows) ? esc(money(sumGross(rows))) : ''}</td><td></td></tr></tfoot>
+    </table></div>`;
+  }
+  // how the ended campaigns did: one bar for all of them and one per objective, then the campaigns themselves
+  function resView(list, today, showClient){
+    const done = list.filter(c=>c.stage === 'done');
+    if (!done.length) return `<div class="cg-panel"><p class="empty-hint">${esc(t('cmp.res.none'))}</p></div>`;
+    const groups = new Map();
+    done.forEach(c=>{ const o = clean(c.objective); if (!groups.has(o)) groups.set(o, []); groups.get(o).push(c); });
+    const lines = [[t('cmp.res.all'), done], ...[...groups].sort((a, b)=>b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([o, arr])=>[o ? objLabel(o) : t('cmp.res.noObj'), arr])];
+    const most = Math.max(...lines.map(l=>l[1].length));
+    const chart = lines.map(([name, arr], i)=>{
+      const n = {yes:0, no:0, open:0}; arr.forEach(c=>n[resultOf(c)]++);
+      const rated = n.yes + n.no, text = t('cmp.res.line', {y:n.yes, n:n.no}) + (n.open ? ' · ' + t('cmp.res.open', {o:n.open}) : '');
+      return `<div class="rz-row${i ? '' : ' all'}"><span class="rz-name" data-bidi>${esc(name)}</span>
+        <div class="rz-track"><div class="rz-bar" style="width:${arr.length / most * 100}%" role="img" aria-label="${esc(name + ': ' + text)}">${CAMP_RESULTS.slice(1).concat('open').map(k=>n[k]
+          ? `<i class="rs-${k}" style="flex:${n[k]}" title="${esc(t('cmp.rs.' + k) + ': ' + n[k])}"></i>` : '').join('')}</div></div>
+        <span class="rz-val">${esc(text)}${rated ? ` · <b>${esc(t('cmp.res.rate', {p:Math.round(n.yes / rated * 100)}))}</b>` : ''}</span></div>`;
+    }).join('');
+    const ended = done.slice().sort((a, b)=>String(b.end || b.start || '').localeCompare(String(a.end || a.start || '')) || a.name.localeCompare(b.name));
+    const heads = ['campaign', showClient ? 'client' : '', 'platform', 'objective', 'ended', 'net', 'target', 'result', 'after'].filter(Boolean);
+    return `<div class="cg-panel cg-res"><header class="rz-head"><h3>${esc(t('cmp.res.title'))}</h3><span>${esc(t('cmp.res.sub'))}</span><span class="sp"></span>
+        <div class="rz-legend">${['yes', 'no', 'open'].map(k=>`<span class="rs-${k}"><i></i>${esc(t('cmp.rs.' + k))}</span>`).join('')}</div></header>
+      <div class="rz-chart">${chart}</div></div>
+      <div class="cg-panel cg-tbl-wrap"><table class="cg-tbl"><caption>${esc(t('cmp.res.ended'))}</caption>
+      <thead><tr>${heads.map(h=>`<th scope="col" class="${h === 'net' ? 'num' : ''}">${esc(t('cmp.c.' + h))}</th>`).join('')}</tr></thead>
+      <tbody>${ended.map(c=>{ const b = api.boardById(c.boardId), e = isISO(c.end) ? c.end : '';
+        return `<tr class="cg-row" data-act="cmp-open" data-id="${c.id}" tabindex="0"><th scope="row"><bdi>${esc(c.name)}</bdi></th>${showClient ? `<td data-bidi>${esc(b ? b.name : '')}</td>` : ''}
+          <td>${platChip(clean(c.platform))}</td><td data-bidi>${esc(objLabel(clean(c.objective)))}</td><td class="nw">${esc(e ? api.fmtDay(e) : '')}</td>
+          <td class="num" title="${esc(budgetTip(c))}">${netOf(c) !== null ? esc(money(netOf(c))) : ''}</td><td class="tgt" data-bidi>${esc(clean(c.target))}</td>
+          <td>${resChip(c)}</td><td class="aft"><div data-bidi>${esc(String(c.after || '').trim())}</div></td></tr>`; }).join('')}</tbody></table></div>`;
   }
 
   /* ---------- the screen ---------- */
@@ -215,7 +324,8 @@ export function createCampaigns(api){
       el.innerHTML = `<div class="cg">${bar()}<div class="empty-state"><b>${esc(t('cmp.empty'))}</b>${esc(t('cmp.emptySub'))}</div></div>`;
       return '';
     }
-    el.innerHTML = `<div class="cg">${bar()}${kpis(list, today, attn)}${mode() === 'time' ? timeView(list, today, !b) : boardView(list, today, !b)}</div>`;
+    const view = {board:boardView, time:timeView, live:liveView, res:resView}[mode()];
+    el.innerHTML = `<div class="cg">${bar()}${kpis(list, today, attn)}${view(list, today, !b)}</div>`;
     return t('cmp.sum', {live:list.filter(c=>c.stage === 'live').length, wait:list.filter(c=>c.stage === 'wait').length});
   }
 
@@ -225,8 +335,9 @@ export function createCampaigns(api){
     if (id && !c) return;
     if (!c && !edit) return;
     if (!c && !boards.length) return api.toast(t('cmp.noBoards'));
-    const cur = c || {name:'', boardId:(api.scopeBoard() || boards[0]).id, platform:P.campPlat || '', stage:'plan', start:'', end:'', budget:null, link:'', notes:''};
+    const cur = c || {name:'', boardId:(api.scopeBoard() || boards[0]).id, platform:P.campPlat || '', objective:'', stage:'plan', start:'', end:'', net:null, gross:null, target:'', result:'open', after:'', link:'', notes:''};
     const plat = clean(cur.platform), known = CAMP_PLATFORMS.some(p=>p[0] === plat), dis = edit ? '' : ' disabled';
+    const obj = clean(cur.objective), objKnown = CAMP_OBJECTIVES.includes(obj);
     const dlg = api.showModal(`<form novalidate style="display:contents">
       ${api.head(c ? (edit ? t('cmp.edit') : t('cmp.one')) : t('cmp.new'))}
       <div class="c-body cg-form">
@@ -236,16 +347,27 @@ export function createCampaigns(api){
           <label class="fld">${esc(t('cmp.f.platform'))}<select name="platform"${dis}><option value=""></option>${CAMP_PLATFORMS.map(p=>`<option${p[0] === plat ? ' selected' : ''}>${esc(p[0])}</option>`).join('')}<option value="*"${plat && !known ? ' selected' : ''}>${esc(t('cmp.other'))}</option></select>
             <input name="platformOther" data-bidi maxlength="40" placeholder="${esc(t('cmp.otherPh'))}" value="${esc(known ? '' : plat)}"${plat && !known ? '' : ' hidden'}${dis}></label>
         </div>
+        <div class="grid2">
+          <label class="fld">${esc(t('cmp.f.objective'))}<select name="objective"${dis}><option value=""></option>${CAMP_OBJECTIVES.map((o, i)=>`<option value="${esc(o)}"${o === obj ? ' selected' : ''}>${esc(t('cmp.o.' + i))}</option>`).join('')}<option value="*"${obj && !objKnown ? ' selected' : ''}>${esc(t('cmp.other'))}</option></select>
+            <input name="objectiveOther" data-bidi maxlength="40" placeholder="${esc(t('cmp.objPh'))}" value="${esc(objKnown ? '' : obj)}"${obj && !objKnown ? '' : ' hidden'}${dis}></label>
+          <label class="fld">${esc(t('cmp.f.target'))}<input name="target" data-bidi autocomplete="off" maxlength="200" placeholder="${esc(t('cmp.targetPh'))}" value="${esc(cur.target || '')}"${dis}></label>
+        </div>
         <fieldset class="fld cg-stages"><legend>${esc(t('cmp.f.stage'))}</legend><div class="cg-stage-row">${CAMP_STAGES.map(st=>`<label class="cg-chip cs-${st}"><input type="radio" name="stage" value="${st}"${st === cur.stage ? ' checked' : ''}${dis}><span>${esc(t('cmp.st.' + st))}</span></label>`).join('')}</div>
           <small>${esc(t('cmp.autoNote'))}</small></fieldset>
-        <div class="grid3">
+        <div class="grid2">
           <label class="fld">${esc(t('cmp.f.start'))}<input type="date" name="start" value="${isISO(cur.start) ? cur.start : ''}"${dis}></label>
           <label class="fld">${esc(t('cmp.f.end'))}<input type="date" name="end" value="${isISO(cur.end) ? cur.end : ''}"${dis}></label>
-          <label class="fld">${esc(t('cmp.f.budget'))}<input type="number" name="budget" min="0" step="1" inputmode="decimal" value="${budgetOf(cur) ?? ''}"${dis}></label>
+        </div>
+        <div class="grid2">
+          <label class="fld">${esc(t('cmp.f.net'))}<input type="number" name="net" min="0" step="1" inputmode="decimal" value="${netOf(cur) ?? ''}"${dis}></label>
+          <label class="fld">${esc(t('cmp.f.gross'))}<input type="number" name="gross" min="0" step="1" inputmode="decimal" value="${grossOf(cur) ?? ''}"${dis}></label>
         </div>
         <label class="fld">${esc(t('cmp.f.link'))}<span class="cg-link-row"><input name="link" dir="ltr" inputmode="url" autocomplete="off" placeholder="https://" value="${esc(cur.link || '')}"${dis}>
           ${cur.link ? `<a class="btn icon subtle" href="${esc(cur.link)}" target="_blank" rel="noopener noreferrer" title="${esc(t('cmp.openLink'))}" aria-label="${esc(t('cmp.openLink'))}">${I.open}</a>` : ''}</span></label>
         <label class="fld">${esc(t('cmp.f.notes'))}<textarea name="notes" rows="3" data-bidi maxlength="2000"${dis}>${esc(cur.notes || '')}</textarea></label>
+        <fieldset class="fld cg-stages cg-after"><legend>${esc(t('cmp.f.result'))}</legend><div class="cg-stage-row">${CAMP_RESULTS.map(r=>`<label class="cg-chip rs-${r}"><input type="radio" name="result" value="${r}"${r === resultOf(cur) ? ' checked' : ''}${dis}><span>${esc(t('cmp.r.' + r))}</span></label>`).join('')}</div>
+          <small>${esc(t('cmp.resultNote'))}</small></fieldset>
+        <label class="fld">${esc(t('cmp.f.after'))}<textarea name="after" rows="2" data-bidi maxlength="2000" placeholder="${esc(t('cmp.afterPh'))}"${dis}>${esc(cur.after || '')}</textarea></label>
         <em class="err cg-err" hidden></em>
       </div>
       <div class="m-foot">${c && edit ? `<button type="button" class="btn danger-subtle" data-act="cmp-del" data-id="${c.id}">${I.trash}<span>${esc(t('cmp.del'))}</span></button>` : ''}<span class="sp"></span>
@@ -254,6 +376,7 @@ export function createCampaigns(api){
     dlg.setAttribute('aria-label', c ? t('cmp.edit') : t('cmp.new'));
     const f = dlg.querySelector('form'), err = dlg.querySelector('.cg-err');
     f.platform.addEventListener('change', ()=>{ f.platformOther.hidden = f.platform.value !== '*'; if (!f.platformOther.hidden) f.platformOther.focus(); });
+    f.objective.addEventListener('change', ()=>{ f.objectiveOther.hidden = f.objective.value !== '*'; if (!f.objectiveOther.hidden) f.objectiveOther.focus(); });
     f.addEventListener('submit', e=>{
       e.preventDefault();
       if (!api.canEdit()) return;
@@ -261,13 +384,18 @@ export function createCampaigns(api){
       const fail = !name ? t('cmp.nameReq') : isISO(start) && isISO(end) && end < start ? t('cmp.datesBad') : '';
       err.textContent = fail; err.hidden = !fail;
       if (fail){ (name ? f.end : f.name).focus(); return; }
-      const bud = f.budget.value === '' ? null : Math.round(Number(f.budget.value) * 100) / 100, now = Date.now();
+      const amount = inp=>inp.value === '' ? null : num(Math.round(Number(inp.value) * 100) / 100), text = inp=>String(inp.value || '').replace(/\r\n?/g, '\n').trim().slice(0, 2000);
+      const net = amount(f.net), now = Date.now();
+      // "budget" is the name the net budget had at first: kept equal to it, for a sheet whose script was not updated yet
       const data = {kind:'campaign', name, boardId:f.board.value, platform:f.platform.value === '*' ? clean(f.platformOther.value).slice(0, 40) : f.platform.value,
-        stage:f.stage.value || 'plan', start:isISO(start) ? start : '', end:isISO(end) ? end : '', budget:bud !== null && isFinite(bud) && bud >= 0 ? bud : null,
-        link:normLink(f.link.value), notes:String(f.notes.value || '').replace(/\r\n?/g, '\n').trim().slice(0, 2000), archived:false,
+        objective:f.objective.value === '*' ? clean(f.objectiveOther.value).slice(0, 40) : f.objective.value,
+        stage:f.stage.value || 'plan', start:isISO(start) ? start : '', end:isISO(end) ? end : '', net, gross:amount(f.gross), budget:net,
+        target:clean(f.target.value).slice(0, 200), result:CAMP_RESULTS.includes(f.result.value) ? f.result.value : 'open', after:text(f.after),
+        link:normLink(f.link.value), notes:text(f.notes), archived:false,
         created:c ? (c.created || now) : now, updated:now, by:api.userName()};
       data.stage = stageNow(data, api.today());
-      const next = {...data, id:c ? c.id : 'cmp_' + api.uid().replace(/[^A-Za-z0-9]/g, '')};
+      // on top of what the campaign already holds, so a field this screen does not know is kept
+      const next = {...(c || {}), ...data, id:c ? c.id : 'cmp_' + api.uid().replace(/[^A-Za-z0-9]/g, '')};
       if (c) all[all.indexOf(c)] = next; else all.push(next);
       write([next]); api.closeModal(); api.rerender();
     });
@@ -283,6 +411,7 @@ export function createCampaigns(api){
       case 'cmp-mode': P.campMode = b.dataset.m; savePrefs(); api.rerender(); break;
       case 'cmp-plat': P.campPlat = b.dataset.p || ''; savePrefs(); api.rerender(); break;
       case 'cmp-ended': showEnded = true; api.rerender(); break;
+      case 'cmp-attn': showAttn = !showAttn; api.rerender(); break;
       case 'cmp-move': {
         e.stopPropagation();
         const c = get(id); if (!c) break;
@@ -299,7 +428,7 @@ export function createCampaigns(api){
         break; }
     }
   }
-  el.addEventListener('keydown', e=>{ if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('cg-card')){ e.preventDefault(); open(e.target.dataset.id); } });
+  el.addEventListener('keydown', e=>{ if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.cg-card,.cg-row')){ e.preventDefault(); open(e.target.dataset.id); } });
   // drag a card to another stage (mouse; on touch the card's menu does the same)
   el.addEventListener('dragstart', e=>{ const c = e.target.closest?.('.cg-card'); if (!c || !api.canEdit()) return; dragId = c.dataset.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId); c.classList.add('dragging'); });
   el.addEventListener('dragend', ()=>{ dragId = null; el.querySelectorAll('.dragging,.over').forEach(x=>x.classList.remove('dragging', 'over')); });
